@@ -11,6 +11,7 @@ from mep_plan import (  # noqa: E402
     unmatched_clusters, tray_route_totals, water_diameter,
     water_segment_specs, water_system, water_zone, wire_expanded_length,
     measurement_candidates,
+    mep_relations,
 )
 
 
@@ -165,6 +166,9 @@ def main() -> None:
     assert materials[0]["name"] == "闸阀" and materials[0]["spec"] == "DN25"
     assert materials[0]["qty"] == 2 and len(materials[0]["sources"]) == 2
     assert measurement_candidates({"measurements": [{"id": "m1", "kind": "length", "value": 3.0, "final_quantity": False}]})[0]["id"] == "m1"
+    rels = mep_relations({"mep_relations": [{"id": "r1", "relation_type": "equipment_segment", "status": "candidate"}]})
+    assert rels[0]["relation_type"] == "equipment_segment"
+    assert mep_relations(None) == []
     print("self_test OK")
 
 

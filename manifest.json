@@ -1,12 +1,12 @@
 {
   "name": "anzhuang-suanliang",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "安装工程 DWG/扫描索引 → 概算清单底稿与物资计划草稿双口径输出；覆盖导管、电线、电缆、桥架、给排水、喷淋、支吊架、设备、火灾报警和应急照明。",
   "author": "lis",
   "license": "CC-BY-NC-SA-4.0",
   "entry": "SKILL.md",
   "requires": {
-    "skill": "cad-file-reader>=0.18.0",
+    "skill": "cad-file-reader>=0.25.0",
     "python": ">=3.10"
   },
   "scripts": [

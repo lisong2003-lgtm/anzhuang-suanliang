@@ -55,7 +55,7 @@ def cad_reader_info() -> dict:
             parts.append(int(piece))
         except ValueError:
             parts.append(0)
-    compatible = len(parts) >= 2 and (parts[0], parts[1]) >= (0, 18)
+    compatible = len(parts) >= 2 and (parts[0], parts[1]) >= (0, 25)
     return {"version": version, "measurement_candidates_compatible": compatible}
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(VENDOR))

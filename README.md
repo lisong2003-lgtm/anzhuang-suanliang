@@ -2,9 +2,9 @@
 
 从安装工程施工图快速生成**概算清单底稿**和**物资计划草稿**，服务目标是出量、备料、图审查量和专业软件结果交叉核对；不是金额计价工具，也不是结算量工具。
 
-## 0.2.0 优化概览
+## 0.4.0 优化概览
 
-- 对接 `cad-file-reader >= 0.18.0`，在扫描层记录底座版本和测量候选兼容状态。
+- 对接 `cad-file-reader >= 0.25.0`，在扫描层记录底座版本和测量候选兼容状态。
 - 支持把 CAD 识图产生的长度、面积、体积候选导入“CAD测量候选核对”工作表；这些值只作识图证据，`final_quantity=false`。
 - 算量口径、材料量、损耗和核对清单仍由本技能负责，不把识图候选直接当工程量。
 
@@ -36,7 +36,7 @@ python scripts/mep_plan.py \
 
 如果已有 `.scan.json`，直接把多个平面扫描 JSON 传给 `mep_plan.py --scan`，不需要重新扫描 DWG。
 
-`mep_scan.py` 会自动查找同级或常见安装位置的 `cad-file-reader`（建议 0.18.0+）；若找不到，设置环境变量：
+`mep_scan.py` 会自动查找同级或常见安装位置的 `cad-file-reader`（建议 0.25.0+）；若找不到，设置环境变量：
 
 ```bash
 export CAD_SKILL_DIR=/path/to/cad-file-reader
@@ -44,7 +44,7 @@ export CAD_SKILL_DIR=/path/to/cad-file-reader
 
 ## 依赖
 
-- `cad-file-reader >= 0.18.0`：读取 DWG，并在扫描结果记录版本/测量候选兼容状态；`mep_plan.py --cad-measurement` 可导入测量候选做识图复核，候选不参与算量。
+- `cad-file-reader >= 0.25.0`：读取 DWG，并在扫描结果记录版本/测量候选兼容状态；`mep_plan.py --cad-measurement` 可导入测量候选做识图复核，候选不参与算量。
 - Python ≥3.10。
 - openpyxl：生成 xlsx。
 - 常见系统：macOS/Linux；扫描层当前以本机 CAD 解析环境为主。

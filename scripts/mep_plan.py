@@ -790,6 +790,44 @@ def measurement_candidates(data: dict | None) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
+def mep_relations(data: dict | None) -> list[dict]:
+    """读取 cad-file-reader MEP 几何候选（设备-管段/立管-管段/端点冲突）；只作复核证据。"""
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("mep_relations")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def cad_validate_json(path: str) -> dict:
+    """可选：用 cad-file-reader cad_validate.sh 校验交接 JSON；缺底座/失败不阻断。"""
+    import os, subprocess
+    base = os.environ.get("CAD_SKILL_DIR")
+    if not base:
+        for d in (Path.home() / ".codex/skills/cad-file-reader", Path.home() / ".claude/skills/cad-file-reader"):
+            if Path(d).is_dir():
+                base = d
+                break
+    if not base:
+        return {}
+    validator = Path(base) / "scripts" / "cad_validate.sh"
+    if not validator.exists():
+        return {}
+    try:
+        r = subprocess.run([str(validator), path], capture_output=True, text=True, timeout=180)
+    except Exception as exc:
+        return {"ok": False, "errors": [f"{type(exc).__name__}: {exc}"]}
+    errors = []
+    for ln in r.stdout.splitlines():
+        if not ln.strip():
+            continue
+        try:
+            rec = json.loads(ln)
+            errors.extend(rec.get("errors") or [])
+        except Exception:
+            pass
+    return {"ok": r.returncode == 0 and not errors, "errors": errors[:20]}
+
+
 def source_text(sources: dict) -> str:
     return "；".join(f"{k}:{v:,.0f}"
                      for k, v in sorted(sources.items(), key=lambda kv: -kv[1]) if k)
@@ -814,7 +852,8 @@ def water_blocks(scans: list[dict]) -> list[tuple[str, str, int]]:
 
 
 def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
-          trunk_scans: list[dict] | None = None, cad_measurement: dict | None = None) -> Path:
+          trunk_scans: list[dict] | None = None, cad_measurement: dict | None = None,
+          mep_geometry: dict | None = None) -> Path:
     specs, _ctype = spec_tables(sys_scans)
     boxed_specs = boxed_system_specs(
         sys_scans, cfg.get("system_box_spec_radius_mm", 250_000)
@@ -873,6 +912,18 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
         ws.append([
             row.get("id", ""), row.get("kind", ""), row.get("value", ""), row.get("unit", ""),
             row.get("basis", ""), row.get("status", ""), row.get("review_reason", ""),
+            row.get("source_schema", ""), row.get("source_id", ""),
+        ])
+    ws["A1"].font = bold
+
+    mep_rows = mep_relations(mep_geometry)
+    ws = wb.create_sheet("MEP关联候选核对")
+    ws.append(["说明", "cad-file-reader MEP 几何候选只作复核证据（设备-管段/立管-管段/端点冲突），final_quantity=false；不参与算量"])
+    ws.append(["编号", "关联类型", "系统", "路由类", "状态", "复核原因", "源 schema", "源编号"])
+    for row in mep_rows:
+        ws.append([
+            row.get("id", ""), row.get("relation_type", ""), row.get("system", ""),
+            row.get("route_class", ""), row.get("status", ""), row.get("review_reason", ""),
             row.get("source_schema", ""), row.get("source_id", ""),
         ])
     ws["A1"].font = bold
@@ -1227,6 +1278,7 @@ def main() -> None:
     ap.add_argument("--system", nargs="+", help="系统图扫描 JSON（可多张）")
     ap.add_argument("--trunk-scan", nargs="+", help="干线平面/母线层扫描 JSON（可多张）")
     ap.add_argument("--cad-measurement", default=None, help="cad-file-reader 测量候选 JSON；只作复核证据")
+    ap.add_argument("--mep-geometry", default=None, help="cad-file-reader MEP 几何候选 JSON；只作复核证据")
     ap.add_argument("--config", default=str(Path(__file__).parent.parent / "references/loss_rules.json"))
     ap.add_argument("--out-prefix", required=True)
     args = ap.parse_args()
@@ -1235,7 +1287,13 @@ def main() -> None:
     trunk_scans = [load(p) for p in args.trunk_scan] if args.trunk_scan else []
     cfg = json.load(open(args.config, encoding="utf-8"))
     cad_measurement = load(args.cad_measurement) if args.cad_measurement else None
-    out = build(scans, sys_scans, cfg, args.out_prefix, trunk_scans, cad_measurement)
+    mep_geometry = load(args.mep_geometry) if args.mep_geometry else None
+    validation = {}
+    if args.cad_measurement:
+        validation = cad_validate_json(args.cad_measurement)
+    out = build(scans, sys_scans, cfg, args.out_prefix, trunk_scans, cad_measurement, mep_geometry)
+    if validation.get("ok") is False:
+        print("cad-measurement validation failed:", json.dumps(validation["errors"], ensure_ascii=False))
     print("written:", out)
 
 

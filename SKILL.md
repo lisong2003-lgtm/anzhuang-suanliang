@@ -2,7 +2,7 @@
 name: anzhuang-suanliang
 slug: anzhuang-suanliang
 displayName: 安装算量 · 概算底稿与物资计划双口径
-version: 0.2.0
+version: 0.4.0
 author: lis
 license: CC-BY-NC-SA-4.0
 description: 从安装工程 DWG/扫描索引提取概算清单底稿与物资计划草稿：按回路规格分档管线，展开电线芯线与预留，估算电缆、桥架、给排水、喷淋、支吊架和设备数量。目标是概算出量、物资计划、图审查量和专业软件结果交叉核对；不替代翻样、下料、结算，也不输出金额。
@@ -12,7 +12,7 @@ description: 从安装工程 DWG/扫描索引提取概算清单底稿与物资�
 
 ## 0.2.0 优化概况
 
-- 对接 `cad-file-reader >= 0.18.0`，扫描结果记录底座版本和测量候选兼容状态。
+- 对接 `cad-file-reader >= 0.25.0`，扫描结果记录底座版本和测量候选兼容状态。
 - `mep_plan.py --cad-measurement` 可把长度/面积/体积识图候选导入“CAD测量候选核对”工作表；候选固定 `final_quantity=false`，不参与本技能算量。
 - 保留安装专业双口径输出、回路规格匹配、水系统分区、立管识别、支架估算和核对清单；不输出金额、结算量或竣工计量。
 
@@ -37,7 +37,7 @@ python scripts/mep_plan.py \
 
 ## 依赖
 
-- 依赖 `cad-file-reader >= 0.18.0`；扫描结果会记录底座版本和测量候选兼容状态。
+- 依赖 `cad-file-reader >= 0.25.0`；扫描结果会记录底座版本和测量候选兼容状态。
 - 可用 `cad_measure.sh` 先生成长度/面积/体积识图候选，再通过 `mep_plan.py --cad-measurement` 导入“CAD测量候选核对”工作表；候选固定 `final_quantity=false`，不参与本技能算量。
 
 - `cad-file-reader` 仅用于 `mep_scan.py` 读 DWG；找不到时设置 `CAD_SKILL_DIR=/path/to/cad-file-reader`。
