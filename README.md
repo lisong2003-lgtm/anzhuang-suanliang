@@ -1,5 +1,8 @@
 # 安装算量（anzhuang-suanliang）
 
+> 📦 **SkillHub 安装**：`skillhub install anzhuang-suanliang`　|　仓库：[lisong2003-lgtm/anzhuang-suanliang](https://github.com/lisong2003-lgtm/anzhuang-suanliang)
+
+
 从安装工程施工图快速生成**概算清单底稿**和**物资计划草稿**，服务目标是出量、备料、图审查量和专业软件结果交叉核对；不是金额计价工具，也不是结算量工具。
 
 ## 0.4.0 优化概览
