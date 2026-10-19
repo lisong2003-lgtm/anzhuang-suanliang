@@ -12,7 +12,11 @@ from mep_plan import (  # noqa: E402
     water_segment_specs, water_system, water_zone, wire_expanded_length,
     measurement_candidates,
     mep_relations,
+    is_electric_route_layer,
+    is_pipe_route_layer,
+    is_tray_route_layer,
 )
+from mep_scan import drawing_unit_info
 
 
 def main() -> None:
@@ -169,6 +173,47 @@ def main() -> None:
     rels = mep_relations({"mep_relations": [{"id": "r1", "relation_type": "equipment_segment", "status": "candidate"}]})
     assert rels[0]["relation_type"] == "equipment_segment"
     assert mep_relations(None) == []
+    assert is_electric_route_layer("强电-电缆排管")
+    assert is_electric_route_layer("景观照明-路灯")
+    assert is_pipe_route_layer("室外给水-给水")
+    assert is_pipe_route_layer("综合管网-雨水")
+    assert is_pipe_route_layer("DIM_污水")
+    assert is_pipe_route_layer("HEATER")
+    assert is_electric_route_layer("管线-动照管线")
+    assert is_tray_route_layer("SITE_TRAY-电缆沟")
+    assert water_system("HEATER") == "暖通"
+    assert water_zone("管线-中水", "中水") == "全图"
+    class _FakeDoc:
+        def header_variables(self):
+            return {"insunits": 0, "ltscale": 1000, "textsize": 3}
+    unit = drawing_unit_info(_FakeDoc(), "auto")
+    assert unit["status"] == "review" and unit["effective"] == "unknown"
+    assert drawing_unit_info(_FakeDoc(), "m")["coord_scale_to_mm"] == 1000
+    class _FakeEntity:
+        dxftype = "LINE"
+        def __init__(self, length=20.0):
+            self.dxf = {"start": (0.0, 0.0), "end": (length, 0.0)}
+    class _FakeSpace:
+        def iter_entities(self):
+            return iter([_FakeEntity(20.0 + (i % 5)) for i in range(24)])
+    class _MetricDoc:
+        def header_variables(self):
+            return {"insunits": 0, "ltscale": 1000, "textsize": 3}
+        def modelspace(self):
+            return _FakeSpace()
+    metric = drawing_unit_info(_MetricDoc(), "auto")
+    assert metric["status"] == "auto_inferred" and metric["effective"] == "m", metric
+    assert metric["unit_inference"]["median"] == 22.0, metric
+    outdoor = {
+        "file": "outdoor.dwg",
+        "texts": [{"layer": "TEXT_给水", "text": "DN200", "x": 4_000_000, "y": 0}],
+        "segments": [["室外给水-给水", 8_000_000, 0, 0]],
+        "pipe_segments": [["室外给水-给水", 8_000_000, 0, 0, 0, 8_000_000, 0, 0]],
+    }
+    assert water_system("室外给水-给水") == "给水"
+    assert water_system("综合管网-雨水") == "雨水"
+    records = water_segment_specs([outdoor], radius_mm=15_000)
+    assert len(records) == 1 and records[0]["dn"] == "DN200", records
     print("self_test OK")
 
 

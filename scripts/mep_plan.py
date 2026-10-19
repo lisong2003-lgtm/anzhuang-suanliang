@@ -44,6 +44,21 @@ DOOR_CODE = re.compile(r"^[MXZ]?C?\d{4}$")
 TAG_CODE = re.compile(r"^[A-Z]{1,2}[-]?\d+$")
 TABLE_TAGS = {"WHAT", "SN", "SNN", "SPEC", "UNIT", "UN", "数量", "TYPE"}
 UNICODE_ESCAPE_RE = re.compile(r"(?:\\U\+|U\+)([0-9A-Fa-f]{4})")
+ELECTRIC_ROUTE_RE = re.compile(r"(WIRE|LGT|BUSB|强电|弱电|电缆|照明线路|景观照明|路灯|SITE[_-]?(?:WIRE|LIGHT)|DIM-动力|管线-动照|管线-供电)", re.I)
+PIPE_ROUTE_RE = re.compile(r"(PIPE|管网|综合管网|室外管网|雨水|污水|废水|给水|中水|消防|喷淋|燃气|热力|暖通|采暖|供热|SITE[_-]?PIPE|DIM_|EQUIP_|管线-|HEATER|HEATING)", re.I)
+TRAY_ROUTE_RE = re.compile(r"(CABLETRAY|电缆沟|电缆排管|强电排管|弱电排管|SITE[_-]?TRAY)", re.I)
+
+
+def is_electric_route_layer(layer: str) -> bool:
+    return bool(ELECTRIC_ROUTE_RE.search(layer))
+
+
+def is_pipe_route_layer(layer: str) -> bool:
+    return bool(PIPE_ROUTE_RE.search(layer))
+
+
+def is_tray_route_layer(layer: str) -> bool:
+    return bool(TRAY_ROUTE_RE.search(layer))
 
 
 def load(path: str) -> dict:
@@ -140,8 +155,7 @@ def box_circuits(scans: list[dict], specs: dict[str, Counter], radius_mm: float,
             if m:
                 labels.append((m.group(1), m.group(2), t["x"], t["y"]))
         for layer, length, x, y in scan.get("segments", []):
-            up = layer.upper()
-            if "WIRE" not in up and not up.startswith("LGT"):
+            if not is_electric_route_layer(layer):
                 continue
             best, best_d = None, None
             for box, token, lx, ly in labels:
@@ -175,8 +189,7 @@ def unmatched_clusters(scans: list[dict], specs: dict[str, Counter], radius_mm: 
     for scan in scans:
         labels = plan_labels(scan)
         for layer, length, x, y in scan.get("segments", []):
-            up = layer.upper()
-            if "WIRE" not in up and not up.startswith("LGT"):
+            if not is_electric_route_layer(layer):
                 continue
             best, best_d = None, None
             for token, lx, ly in labels:
@@ -212,11 +225,13 @@ def water_system(layer: str) -> str:
         ("虹吸雨水", "虹吸雨水"), ("压力废", "压力废水"), ("压力污", "压力污水"),
         ("喷淋", "喷淋"), ("消防", "消防"), ("水炮", "水炮"), ("给水", "给水"),
         ("中水", "中水"), ("市政给", "给水"), ("凝结", "凝结水"),
+        ("HEATER", "暖通"), ("HEATING", "暖通"), ("暖通", "暖通"), ("暖供", "暖通"), ("暖回", "暖通"),
+        ("自动喷淋", "喷淋"), ("动照", "电力"), ("供电", "电力"),
         ("雨水", "雨水"), ("废水", "废水"), ("污水", "污水"), ("通气", "通气"),
     ):
         if key in layer:
             return system
-    return "其他水" if layer.startswith("PIPE-") else ""
+    return "其他水" if is_pipe_route_layer(layer) else ""
 
 
 def water_label_system(layer: str, text: str = "") -> str | None:
@@ -233,14 +248,26 @@ def water_label_system(layer: str, text: str = "") -> str | None:
 
 
 def water_zone(layer: str, system: str) -> str:
-    """从图层尾缀识别高/中/低区、室外等水专业分区。"""
-    tail = layer.replace("PIPE-", "", 1)
-    if tail.startswith(system):
-        tail = tail[len(system):]
-    elif system == "给水" and tail.startswith("市政给"):
+    """从图层尾缀识别高/中/低区；过滤常见室外管综图层前缀。"""
+    tail = layer
+    for prefix in ("PIPE-", "管线-", "DIM_", "TEXT_", "EQUIP_", "WIRE-", "DIM-"):
+        if tail.upper().startswith(prefix.upper()):
+            tail = tail[len(prefix):]
+            break
+    for token in (system, "给水", "中水", "雨水", "污水", "废水", "消防", "喷淋", "暖通", "采暖", "供热", "动照", "供电", "电力"):
+        if token and tail.startswith(token):
+            tail = tail[len(token):]
+            break
+    if system == "给水" and tail.startswith("市政给"):
         tail = "市政"
-    tail = tail.strip("-_")
-    return {"中": "中区", "高": "高区", "低": "低区"}.get(tail, tail) or "全图"
+    tail = tail.strip("-_ ")
+    if "高" in tail:
+        return "高区"
+    if "中" in tail and "中水" not in layer:
+        return "中区"
+    if "低" in tail:
+        return "低区"
+    return tail or "全图"
 
 
 def water_segment_specs(scans: list[dict], radius_mm: float,
@@ -257,7 +284,7 @@ def water_segment_specs(scans: list[dict], radius_mm: float,
             else:
                 x1 = y1 = z1 = x2 = y2 = z2 = None
                 x, y = seg[2], seg[3]
-            if not layer.startswith("PIPE-"):
+            if not is_pipe_route_layer(layer):
                 continue
             pipe_system = water_system(layer)
             best, best_d = None, None
@@ -613,7 +640,7 @@ def match_circuits(scans: list[dict], specs: dict[str, Counter], radius_mm: floa
             layer, length, x, y = seg[0], seg[1], seg[2], seg[3]
             by_layer[layer]["total"] += length
             up = layer.upper()
-            if "WIRE" not in up and not up.startswith("LGT"):
+            if not is_electric_route_layer(layer):
                 continue  # 桥架/PIPE 等不走回路规格，按图层单独出量
             best, best_d = None, None
             for token, lx, ly in labels:
@@ -704,7 +731,7 @@ def tray_route_totals(scans: list[dict], max_segment_mm: float = 50_000) -> tupl
     excluded_mm = 0.0
     for scan in scans:
         for layer, length_mm, *_xy in scan.get("segments", []):
-            if "CABLETRAY" not in layer.upper():
+            if not is_tray_route_layer(layer):
                 continue
             if length_mm > max_segment_mm:
                 excluded_mm += length_mm
@@ -904,6 +931,18 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
     for n in notes:
         ws.append([n])
 
+    ws = wb.create_sheet("输入质量核对")
+    ws.append(["文件", "识图域", "图面单位", "单位状态", "坐标单位", "块参照数", "块内几何提示"])
+    for scan in scans:
+        unit = scan.get("drawing_unit") or {}
+        ws.append([
+            scan.get("file", ""), scan.get("domain", ""),
+            unit.get("effective") or "unknown", unit.get("status") or "review",
+            unit.get("insunits", ""), scan.get("block_reference_count", 0),
+            scan.get("block_geometry_review", ""),
+        ])
+    ws["A1"].font = bold
+
     measure_rows = measurement_candidates(cad_measurement)
     ws = wb.create_sheet("CAD测量候选核对")
     ws.append(["说明", "cad-file-reader 测量候选只作识图证据，final_quantity=false；不参与本技能管长/材料/损耗计算"])
@@ -1059,7 +1098,7 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
     water_layer_sources: dict[str, Counter] = defaultdict(Counter)
     for scan in scans:
         for layer, rec in scan["wire_layers"].items():
-            if layer.startswith("PIPE-"):
+            if is_pipe_route_layer(layer):
                 merged[layer][0] += rec["length_mm"]
                 merged[layer][1] += rec["entities"]
                 water_source_totals[layer] += rec["length_mm"]
@@ -1104,7 +1143,7 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
     )
     for scan in scans:
         for layer, rec in scan["wire_layers"].items():
-            if not layer.startswith("PIPE-"):
+            if not is_pipe_route_layer(layer):
                 continue
             system = water_system(layer)
             key = (system, water_zone(layer, system))
