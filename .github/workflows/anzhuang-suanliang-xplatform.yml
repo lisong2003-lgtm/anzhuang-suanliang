@@ -25,6 +25,7 @@ jobs:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: "1"
     steps:
+      - uses: actions/checkout@v4
       - name: Setup deps (openpyxl + cad-file-reader)
         shell: bash
         run: |
