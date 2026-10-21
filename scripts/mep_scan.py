@@ -33,7 +33,7 @@ def _ensure_base() -> Path:
     import subprocess
     script = Path(__file__).resolve().parent / "ensure_base.sh"
     if script.is_file():
-        res = subprocess.run([str(script)], capture_output=True, text=True)
+        res = subprocess.run(["bash", str(script)], capture_output=True, text=True)
         out = res.stdout.strip()
         if res.returncode == 0 and out:
             return Path(out)
