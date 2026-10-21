@@ -29,20 +29,8 @@ except ImportError:
 
 
 def _ensure_base() -> Path:
-    """显式依赖底座：未装时自动下载安装 cad-file-reader，并自动补齐其 vendor。"""
+    """显式依赖底座：优先 CAD_SKILL_DIR，未装时自动下载安装 cad-file-reader，并自动补齐其 vendor。"""
     import subprocess
-    script = Path(__file__).resolve().parent / "ensure_base.sh"
-    if script.is_file():
-        res = subprocess.run(["bash", str(script)], capture_output=True, text=True)
-        out = res.stdout.strip()
-        if res.returncode == 0 and out:
-            return Path(out)
-        # 降级模式（SKILL_NO_BASE=1）或失败：给清晰错误
-        raise RuntimeError(
-            "未找到识图底座 cad-file-reader，且自动安装失败。"
-            "请联网重试，或设 CAD_SKILL_DIR 指向底座；离线可设 SKILL_NO_BASE=1 使用已有扫描结果降级。"
-        )
-    # 旧底座兜底：按常规路径找
     candidates: list[Path] = []
     override = os.environ.get("CAD_SKILL_DIR", "").strip()
     if override:
@@ -56,6 +44,21 @@ def _ensure_base() -> Path:
     for candidate in candidates:
         if (candidate / "scripts").exists():
             return candidate.resolve()
+
+    script = Path(__file__).resolve().parent / "ensure_base.sh"
+    if script.is_file():
+        env = None
+        if override:
+            env = {**os.environ, "CAD_SKILL_DIR": override}
+        res = subprocess.run(["bash", str(script)], capture_output=True,
+                             text=True, env=env)
+        out = res.stdout.strip()
+        if res.returncode == 0 and out:
+            return Path(out)
+        raise RuntimeError(
+            "未找到识图底座 cad-file-reader，且自动安装失败。"
+            "请联网重试，或设 CAD_SKILL_DIR 指向底座；离线可设 SKILL_NO_BASE=1 使用已有扫描结果降级。"
+        )
     raise RuntimeError("未找到 cad-file-reader；请先安装该技能，或设置 CAD_SKILL_DIR 指向其目录。")
 
 
