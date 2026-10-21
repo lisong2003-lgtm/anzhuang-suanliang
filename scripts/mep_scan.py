@@ -2,12 +2,23 @@
 """扫描安装图纸 DWG：管线分段、设备、文本、块计数、属性组、楼层锚点。"""
 from __future__ import annotations
 
+try:
+    import os as _boot_os, sys as _boot_sys
+    _boot_sys.path.insert(0, _boot_os.path.dirname(_boot_os.path.abspath(__file__)))
+    import pyboot as _boot_pyboot
+    _boot_pyboot.ensure_utf8_io()
+except Exception:
+    pass
+
+
 import argparse
 import json
 import math
 import re
 import os
 import sys
+
+import i18n
 from collections import defaultdict
 from pathlib import Path
 
@@ -378,21 +389,37 @@ def scan(path: str, max_text: int = 40000, left_boundary_mm: float | None = None
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("dwg")
-    ap.add_argument("--out", required=True, help="输出 JSON 路径")
-    ap.add_argument("--max-text", type=int, default=40000)
+    raw = sys.argv[1:]
+    lang = i18n.argv_lang(raw)
+    desc = (__doc__ if lang == "zh" else
+            "Scan MEP DWG drawings: pipe segments, devices, text, block counts, attributes, floor anchors.")
+    ap = argparse.ArgumentParser(description=desc)
+    i18n.add_lang_arg(ap, default=lang)
+    ap.add_argument("dwg", help="input DWG drawing" if lang == "en" else "输入 DWG 图纸")
+    ap.add_argument("--out", required=True, help="output JSON path" if lang == "en" else "输出 JSON 路径")
+    ap.add_argument("--max-text", type=int, default=40000,
+                    help="max text records to keep (default 40000)" if lang == "en" else "最大文本数")
     ap.add_argument("--left-boundary-mm", type=float, default=None,
-                    help="同文件左侧独立图区（应急/桥架等）的 x 分界，单位 mm")
+                    help="x split of an independent drawing zone on the left (e.g. emergency / trunk), in mm" if lang == "en" else "同文件左侧独立图区（应急/桥架等）的 x 分界，单位 mm")
     ap.add_argument("--domain", choices=("auto", "indoor", "outdoor"), default="auto",
-                    help="识图域；室外综合管网/景观电气用 outdoor")
+                    help="interpretation domain; outdoor for external pipe networks / landscape electric" if lang == "en" else "识图域；室外综合管网/景观电气用 outdoor")
     ap.add_argument("--unit", choices=("auto", "mm", "m"), default="auto",
-                    help="图面坐标单位；INSUNITS=0 时可用 --unit mm/m 显式确认")
-    args = ap.parse_args()
+                    help="drawing coordinate unit; use --unit mm/m when INSUNITS=0" if lang == "en" else "图面坐标单位；INSUNITS=0 时可用 --unit mm/m 显式确认")
+    args = ap.parse_args(raw)
     result = scan(args.dwg, args.max_text, args.left_boundary_mm, args.domain, args.unit)
+    out_doc = {
+        "status": "ok",
+        "message": ("scan completed" if lang == "en" else "扫描完成"),
+        "schema": result.get("schema", "anzhuang-suanliang/mep-scan/v0"),
+    }
+    result.setdefault("meta", {}).update(out_doc)
     Path(args.out).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-    print(f"OK {result['file']} 段数={len(result['segments'])} "
-          f"文本={len(result['texts'])} 峰值RSS={result['peak_rss_mb']}MB")
+    if lang == "en":
+        print(f"OK {result['file']} segments={len(result['segments'])} "
+              f"texts={len(result['texts'])} peak_rss={result['peak_rss_mb']}MB")
+    else:
+        print(f"OK {result['file']} 段数={len(result['segments'])} "
+              f"文本={len(result['texts'])} 峰值RSS={result['peak_rss_mb']}MB")
 
 
 if __name__ == "__main__":

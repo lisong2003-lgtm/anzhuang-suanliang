@@ -2,10 +2,16 @@
 name: anzhuang-suanliang
 slug: anzhuang-suanliang
 displayName: 安装算量 · 概算底稿与物资计划双口径
-version: 0.4.19
+version: 0.4.20
+platforms: [macos, windows, linux]
 author: lis
 license: CC-BY-NC-SA-4.0
 description: 从安装工程 DWG/扫描索引提取概算清单底稿与物资计划草稿：按回路规格分档管线，展开电线芯线与预留，估算电缆、桥架、给排水、喷淋、支吊架和设备数量。目标是概算出量、物资计划、图审查量和专业软件结果交叉核对；不替代翻样、下料、结算，也不输出金额。
+i18n:
+  en: README.en.md
+  zh: README.md
+locale: zh-CN
+locales: [zh-CN, en-US]
 ---
 
 # 安装算量（概算清单 + 物资计划双口径）

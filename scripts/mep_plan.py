@@ -2,11 +2,24 @@
 """由扫描 JSON 生成安装物资计划：回路匹配分规格、损耗折算订货量。"""
 from __future__ import annotations
 
+try:
+    import os as _boot_os, sys as _boot_sys
+    _boot_sys.path.insert(0, _boot_os.path.dirname(_boot_os.path.abspath(__file__)))
+    import pyboot as _boot_pyboot
+    _boot_pyboot.ensure_utf8_io()
+except Exception:
+    pass
+
+
 import argparse
 import json
 import math
+import os
 import re
+import sys
 from collections import Counter, defaultdict
+
+import i18n
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -1312,15 +1325,22 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--scan", nargs="+", required=True, help="mep_scan 输出的 JSON")
-    ap.add_argument("--system", nargs="+", help="系统图扫描 JSON（可多张）")
-    ap.add_argument("--trunk-scan", nargs="+", help="干线平面/母线层扫描 JSON（可多张）")
-    ap.add_argument("--cad-measurement", default=None, help="cad-file-reader 测量候选 JSON；只作复核证据")
-    ap.add_argument("--mep-geometry", default=None, help="cad-file-reader MEP 几何候选 JSON；只作复核证据")
-    ap.add_argument("--config", default=str(Path(__file__).parent.parent / "references/loss_rules.json"))
-    ap.add_argument("--out-prefix", required=True)
-    args = ap.parse_args()
+    raw = sys.argv[1:]
+    lang = i18n.argv_lang(raw)
+    desc = (__doc__ if lang == "zh" else
+            "Generate installation material plan from scan JSON: circuit-to-spec matching, loss-to-order rounding.")
+    ap = argparse.ArgumentParser(description=desc)
+    i18n.add_lang_arg(ap, default=lang)
+    ap.add_argument("--scan", nargs="+", required=True, help="mep_scan output JSON(s)" if lang == "en" else "mep_scan 输出的 JSON")
+    ap.add_argument("--system", nargs="+", help="system-diagram scan JSON(s)" if lang == "en" else "系统图扫描 JSON（可多张）")
+    ap.add_argument("--trunk-scan", nargs="+", help="trunk / busbar scan JSON(s)" if lang == "en" else "干线平面/母线层扫描 JSON（可多张）")
+    ap.add_argument("--cad-measurement", default=None, help="cad-file-reader measurement candidates JSON (review evidence only)" if lang == "en" else "cad-file-reader 测量候选 JSON；只作复核证据")
+    ap.add_argument("--mep-geometry", default=None, help="cad-file-reader MEP geometry candidates JSON (review evidence only)" if lang == "en" else "cad-file-reader MEP 几何候选 JSON；只作复核证据")
+    ap.add_argument("--config", default=str(Path(__file__).parent.parent / "references/loss_rules.json"),
+                    help="loss-rule JSON config" if lang == "en" else "损耗规则 JSON 配置")
+    ap.add_argument("--out-prefix", required=True,
+                    help="output file prefix" if lang == "en" else "输出文件前缀")
+    args = ap.parse_args(raw)
     scans = [load(p) for p in args.scan]
     sys_scans = [load(p) for p in args.system] if args.system else []
     trunk_scans = [load(p) for p in args.trunk_scan] if args.trunk_scan else []
@@ -1333,7 +1353,7 @@ def main() -> None:
     out = build(scans, sys_scans, cfg, args.out_prefix, trunk_scans, cad_measurement, mep_geometry)
     if validation.get("ok") is False:
         print("cad-measurement validation failed:", json.dumps(validation["errors"], ensure_ascii=False))
-    print("written:", out)
+    print(i18n.T(lang, "written") + ":", out)
 
 
 if __name__ == "__main__":
