@@ -1,6 +1,6 @@
 {
   "name": "anzhuang-suanliang",
-  "version": "0.4.20",
+  "version": "0.4.21",
   "author": "lis",
   "license": "CC-BY-NC-SA-4.0",
   "entry": "SKILL.md",
@@ -22,7 +22,10 @@
     "scripts/run_preflight.sh",
     "scripts/self_test.py",
     "scripts/setup.sh",
-    "scripts/smoke_utf8_json.py"
+    "scripts/smoke_utf8_json.py",
+    "scripts/anzhuang_statesync.py",
+    "scripts/anzhuang_statesync.sh",
+    "scripts/anzhuang_statesync.cmd"
   ],
   "references": [
     ".gitignore",

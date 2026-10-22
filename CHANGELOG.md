@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.4.21 (2026-10-22)
+- lis-skill-bus 可选联动（试点）：scripts/anzhuang_statesync.py push/pull 对接 cad-contract/v1（route_segments/circuits/systems/equipment 等），新 Windows anzhuang_statesync.cmd（未实机跑通，仅静态校验）；bus 未装自动降级。算法/口径不变。
 
 ## 0.4.20 (2026-10-21)
 - 三平台对齐（cross-platform + i18n overseas）：README.en.md、`--lang en|zh` 主入口、i18n.py、CFI 三平台 workflow 全绿。
@@ -17,7 +19,6 @@
 
 - 补充同项目替换版电气系统图回归清单 `anzhuang-suanliang-ts-elec-sys.json`（kind=electrical），与本轮 cad-file-reader 替代版共用同源 CAD 扫描，正式电气候选复核 1/1 通过：systems=1165/equipment=2430/circuits=1943，contract_valid=true。
 - 依赖底座升至 cad-file-reader 0.28.14（含 `--dwg-dxf-fallback` 自动回退支持）。
-
 
 ## 0.4.12 — 2026-10-18（第二期真图回归：45 例 45/45 全通过）
 
@@ -43,11 +44,9 @@
 - 平台安全扫描合规：自动下载底座改为带完整性校验、版本固定。
 
 
-
 ## 0.4.0 — 2026-10-05
 
 对接 cad-file-reader 0.25.0 底座增强：旋转标注聚合、图例匹配、契约置信度/跨专业引用字段；版本门槛升至 `cad-file-reader >= 0.25.0`。
-
 
 ## 0.3.0 — 2026-10-05
 
@@ -56,7 +55,6 @@
 - `mep_plan.py` 新增 `--mep-geometry`：可导入 cad-mep-geometry/v2 的 `mep_relations`（设备—管段、立管—管段、端点连接、系统冲突），进「MEP关联候选核对」工作表；候选固定 `final_quantity=false`，不参与本技能算量。
 - `--cad-measurement` 导入前用 cad-file-reader `cad_validate.sh` 校验交接 JSON；校验失败只提示，不阻断。
 - 自检扩展：覆盖 `mep_relations` 解析与空输入。
-
 
 ## 0.2.0 — 2026-09-20
 
