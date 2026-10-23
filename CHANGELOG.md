@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.22 (2026-10-23)
+- 修复 SkillHub 版 Windows 无 `.cmd` 时的接线说明：改为 `python scripts/*_statesync.py` 等价调用（bus 安装用 `python install_py.py --apply`）；GitHub 完整包保留 `.cmd`。平台发布调整，算法/契约/口径不变。
+
+
 ## 0.4.21 (2026-10-22)
 - lis-skill-bus 可选联动（试点）：scripts/anzhuang_statesync.py push/pull 对接 cad-contract/v1（route_segments/circuits/systems/equipment 等），新 Windows anzhuang_statesync.cmd（未实机跑通，仅静态校验）；bus 未装自动降级。算法/口径不变。
 
