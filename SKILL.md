@@ -112,7 +112,7 @@ bash scripts/mep_plan.sh \
 ④ 常见本机开发副本（`tan/work` 等，最后才回退）。
 命中 dev/临时副本时 stderr 会输出告警行「bus 命中来源：<路径>（临时副本/dev，非正式安装）」，正式路径输出「（正式安装）」；找不到 bus 时不报错，直接写 `$HOME/.codex/skills/.skillbus/state.json`（与 bus 同构，后续装 bus 可无缝读取）。 无 MCP/无 bus 不影响任何算量能力；本技能算法、口径、扣减、损耗、分账与台账逻辑不变。
 
-- Windows 接线：GitHub 完整包 scripts/anzhuang_statesync.cmd push/pull（.cmd 已随包提供；macOS/Linux 用 `bash scripts/anzhuang_statesync.sh` 等价调用）；等价 lis-skill-bus/integration/anzhuang_publish_contract.sh / anzhuang_pull_contract.sh。Windows 未实机跑通，仅静态校验通过（CRLF 行尾；无 /Users、/bin/sh、python3 硬编码；py 启动器 + %PYTHON%/%CODEX_PYTHON% 回退；默认路径用 %USERPROFILE%\.codex）。
+- Windows 接线：GitHub 完整包 scripts/anzhuang_statesync.cmd push/pull（GitHub/ClawHub 包含 .cmd，SkillHub 轻量包剔除 .cmd、Windows 改用同目录 .py 入口；macOS/Linux 用 `bash scripts/anzhuang_statesync.sh` 等价调用）；等价 lis-skill-bus/integration/anzhuang_publish_contract.sh / anzhuang_pull_contract.sh。Windows 未实机跑通，仅静态校验通过（CRLF 行尾；无 /Users、/bin/sh、python3 硬编码；py 启动器 + %PYTHON%/%CODEX_PYTHON% 回退；默认路径用 %USERPROFILE%\.codex）。
 
 ## QTO 五专业联动（P1，可选）
 
