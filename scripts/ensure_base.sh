@@ -12,13 +12,13 @@ if [ -n "$BASE_DIR" ]; then
   BASE_DIR="$(cd "$BASE_DIR" 2>/dev/null && pwd || true)"
 fi
 if [ -z "$BASE_DIR" ]; then
-  for d in "$HOME/.codex/skills/cad-file-reader" "$HOME/.claude/skills/cad-file-reader"; do
-    if [ -d "$d/scripts" ]; then BASE_DIR="$d"; break; fi
+  for d in "$SKILL_DIR/../cad-file-reader" "$HOME"/.workbuddy/skills/*/cad-file-reader "$HOME/.claude/skills/cad-file-reader" "$HOME/.codex/skills/cad-file-reader"; do
+    if [ -d "$d/scripts" ]; then BASE_DIR="$(cd "$d" 2>/dev/null && pwd)"; break; fi
   done
 fi
 
 if [ -n "$BASE_DIR" ] && [ -x "$BASE_DIR/scripts/ensure_runtime.sh" ]; then
-  "$BASE_DIR/scripts/ensure_runtime.sh" --quiet || exit $?
+  bash "$BASE_DIR/scripts/ensure_runtime.sh" --quiet || exit $?
   echo "$BASE_DIR"
   exit 0
 fi
@@ -40,7 +40,7 @@ if [ -n "$BASE_DIR" ] && [ -d "$BASE_DIR/vendor" ]; then
 fi
 
 # ---- 自动安装底座（显式依赖，非捆绑，带 SHA-256 完整性校验） -----
-VER="${CAD_FILE_READER_VERSION:-0.28.5}"
+VER="${CAD_FILE_READER_VERSION:-0.34.1}"
 REPO="${CAD_FILE_READER_REPO:-lisong2003-lgtm/cad-file-reader}"
 SHA_BIN="$(command -v shasum || command -v sha256sum || true)"
 if [ -z "$SHA_BIN" ]; then echo >&2 "[$SKILL_NAME] 缺少 sha256sum/shasum 校验工具，停止自动安装底座。"; exit 3; fi
@@ -49,7 +49,7 @@ calc_sha256() {
   else "$SHA_BIN" "$1" | awk '{print $1}'; fi
 }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-BASE_DIR="$HOME/.codex/skills/cad-file-reader"
+BASE_DIR="${CAD_SKILL_DIR:-$SKILL_DIR/../cad-file-reader}"
 if [ -d "$BASE_DIR" ]; then
   echo >&2 "[$SKILL_NAME] 底座目录已存在，未自动更新：$BASE_DIR"
   exit 2
@@ -105,6 +105,6 @@ fi
 mkdir -p "$(dirname "$BASE_DIR")"
 cp -R "$SRC" "$BASE_DIR"
 if [ -x "$BASE_DIR/scripts/ensure_runtime.sh" ]; then
-  "$BASE_DIR/scripts/ensure_runtime.sh" --quiet || exit $?
+  bash "$BASE_DIR/scripts/ensure_runtime.sh" --quiet || exit $?
 fi
 echo "$BASE_DIR"

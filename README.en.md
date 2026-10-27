@@ -10,8 +10,8 @@ Use when you need MEP rough quantities from building drawings without CAD softwa
 
 ## Quick start
 ```bash
-python3 scripts/mep_scan.py plan.dwg --out scan.json
-python3 scripts/mep_plan.py --scan scan.json --out-prefix out
+bash scripts/mep_scan.sh plan.dwg --out scan.json
+bash scripts/mep_plan.sh --scan scan.json --out-prefix out
 ```
 
 ## Install across the three platforms

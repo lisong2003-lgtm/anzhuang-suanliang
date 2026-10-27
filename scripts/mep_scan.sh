@@ -1,17 +1,7 @@
 #!/usr/bin/env bash
+# mep_scan 跨平台 CLI 入口（macOS / Linux；Windows 用 scripts/mep_scan.cmd 或 python scripts/mep_scan.py）。
+# 统一运行时解析（Python / 识图底座 / vendor）见 scripts/runtime_env.sh
 set -euo pipefail
-PY="${CAD_SKILL_PYTHON:-}"
-if [[ -z "${PY}" ]]; then
-  for c in \
-    "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3" \
-    "/opt/homebrew/bin/python3.12" "/usr/local/bin/python3.12" \
-    "/opt/homebrew/bin/python3.11" "/usr/local/bin/python3.11" \
-    "$(command -v python3 || true)"; do
-    if [[ -n "$c" && -x "$c" ]] && "$c" -c 'import sys; assert sys.version_info >= (3,10)' >/dev/null 2>&1; then PY="$c"; break; fi
-  done
-fi
-if [[ -z "${PY}" || ! -x "${PY}" ]]; then
-  echo "❌未找到 Python 3.10+；请设置 CAD_SKILL_PYTHON 指向运行时 Python" >&2
-  exit 2
-fi
-exec "$PY" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mep_scan.py" "$@"
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_HERE/runtime_env.sh"
+exec "$PYTHON_BIN" "$_HERE/mep_scan.py" "$@"

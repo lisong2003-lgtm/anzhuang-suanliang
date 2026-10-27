@@ -22,8 +22,7 @@ from collections import Counter, defaultdict
 import i18n
 from pathlib import Path
 
-from openpyxl import Workbook
-from openpyxl.styles import Font
+# openpyxl 只在写 xlsx 时需要：延迟到出表函数内导入，避免"没装 openpyxl 连 --help 都跑不了"
 
 CIRCUIT_LABEL = re.compile(r"(?::|^)\s*(W[A-Z]{1,3}\d*[A-Za-z]?)\s*$")
 CIRCUIT_BARE = re.compile(r"^(W[A-Z]{1,3}\d*[A-Za-z]?)$")
@@ -843,7 +842,10 @@ def cad_validate_json(path: str) -> dict:
     import os, subprocess
     base = os.environ.get("CAD_SKILL_DIR")
     if not base:
-        for d in (Path.home() / ".codex/skills/cad-file-reader", Path.home() / ".claude/skills/cad-file-reader"):
+        for d in (Path(__file__).resolve().parent.parent.parent / "cad-file-reader",
+                  *sorted(Path.home().glob(".workbuddy/skills/*/cad-file-reader")),
+                  Path.home() / ".claude/skills/cad-file-reader",
+                  Path.home() / ".codex/skills/cad-file-reader"):
             if Path(d).is_dir():
                 base = d
                 break
@@ -853,7 +855,7 @@ def cad_validate_json(path: str) -> dict:
     if not validator.exists():
         return {}
     try:
-        r = subprocess.run([str(validator), path], capture_output=True, text=True, timeout=180)
+        r = subprocess.run(["bash", str(validator), path], capture_output=True, text=True, timeout=180)
     except Exception as exc:
         return {"ok": False, "errors": [f"{type(exc).__name__}: {exc}"]}
     errors = []
@@ -929,6 +931,17 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
     dev_loss = cfg["device_loss_pct"] / 100
     tray_max_segment_mm = max(float(cfg.get("tray_max_segment_mm", 50_000)), 1.0)
     tray_mm, tray_excluded_mm = tray_route_totals(scans, tray_max_segment_mm)
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+    except ImportError as exc:  # pragma: no cover - 环境缺失时的友好提示
+        raise SystemExit(
+            "❌ 生成 xlsx 需要 openpyxl。\n"
+            "   已随底座 vendor 提供时可自动导入；若仍报错，请执行：\n"
+            "     bash scripts/setup.sh            # 推荐，自动补齐依赖\n"
+            "     python3 -m pip install openpyxl  # 或手动安装\n"
+        ) from exc
 
     wb = Workbook()
     bold = Font(bold=True)

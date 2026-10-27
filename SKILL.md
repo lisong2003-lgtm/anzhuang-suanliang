@@ -2,7 +2,7 @@
 name: anzhuang-suanliang
 slug: anzhuang-suanliang
 displayName: 安装算量 · 概算底稿与物资计划双口径
-version: 0.4.22
+version: 0.4.23
 platforms: [macos, windows, linux]
 author: lis
 license: CC-BY-NC-SA-4.0
@@ -26,13 +26,13 @@ locales: [zh-CN, en-US]
 
 ```bash
 # 1. 扫描；平面图、系统图、说明图、干线图可分开出 JSON
-python scripts/mep_scan.py 平面图.dwg --out 平面.json
-python scripts/mep_scan.py 系统图.dwg --out 系统.json
-python scripts/mep_scan.py 设计说明或立面图.dwg --out 说明.json
-python scripts/mep_scan.py 干线平面图.dwg --out 干线.json
+bash scripts/mep_scan.sh 平面图.dwg --out 平面.json
+bash scripts/mep_scan.sh 系统图.dwg --out 系统.json
+bash scripts/mep_scan.sh 设计说明或立面图.dwg --out 说明.json
+bash scripts/mep_scan.sh 干线平面图.dwg --out 干线.json
 
 # 2. 生成双口径表；已有 .scan.json 时不要重新扫 DWG
-python scripts/mep_plan.py \
+bash scripts/mep_plan.sh \
   --scan 平面.json \
   --system 系统.json 说明.json \
   --trunk-scan 干线.json \
@@ -41,7 +41,6 @@ python scripts/mep_plan.py \
 
 输出包含：口径、规范约束、双口径映射、导管与桥架、电线电缆、干线电缆、设备、匹配情况、配电箱回路、未匹配坐标簇、分层、水专业、水系统分区、连通性核对、立管识别、支架估算、置信度分级、总量守恒、材料表提取、材料归并、立管估算、核对清单。
 
-## 依赖
 ## 显式依赖与降级（0.9+）
 
 - 底座 `cad-file-reader >= 0.28.1` 是本技能的**显式依赖**：运行首次会自动检测，缺失时自动下载安装底座并补齐 vendor（联网，下载包做 SHA-256 完整性与版本校验，校验失败拒绝安装）；已装则直接复用，不重复下载。
@@ -113,8 +112,17 @@ python scripts/mep_plan.py \
 ④ 常见本机开发副本（`tan/work` 等，最后才回退）。
 命中 dev/临时副本时 stderr 会输出告警行「bus 命中来源：<路径>（临时副本/dev，非正式安装）」，正式路径输出「（正式安装）」；找不到 bus 时不报错，直接写 `$HOME/.codex/skills/.skillbus/state.json`（与 bus 同构，后续装 bus 可无缝读取）。 无 MCP/无 bus 不影响任何算量能力；本技能算法、口径、扣减、损耗、分账与台账逻辑不变。
 
-- Windows 接线：GitHub 完整包 scripts/anzhuang_statesync.cmd push/pull（SkillHub 版无 .cmd 时用 `python scripts/anzhuang_statesync.py push/pull` 等价调用）；等价 lis-skill-bus/integration/anzhuang_publish/pull_contract.cmd。Windows 未实机跑通，仅静态校验通过（CRLF 行尾；无 /Users、/bin/sh、python3 硬编码；py 启动器 + %PYTHON%/%CODEX_PYTHON% 回退；默认路径用 %USERPROFILE%\.codex）。
+- Windows 接线：GitHub 完整包 scripts/anzhuang_statesync.cmd push/pull（.cmd 已随包提供；macOS/Linux 用 `bash scripts/anzhuang_statesync.sh` 等价调用）；等价 lis-skill-bus/integration/anzhuang_publish_contract.sh / anzhuang_pull_contract.sh。Windows 未实机跑通，仅静态校验通过（CRLF 行尾；无 /Users、/bin/sh、python3 硬编码；py 启动器 + %PYTHON%/%CODEX_PYTHON% 回退；默认路径用 %USERPROFILE%\.codex）。
 
 ## QTO 五专业联动（P1，可选）
 
-可与 `cad-file-reader` 及其它算量 skill 联动（可选）：识别放 `<项目目录>/识别/<slug>/`，量算层输出写 `<项目目录>/算量/<slug>/`，用底座 `scripts/qto_p1_link.py` 登记。此联动只在目录上登记输入/输出与缺口，不替代本技能既有算法、口径与复核。
+可与 `cad-file-reader` 及其它算量 skill 联动（可选）：识别放 `<项目目录>/识别/<slug>/`，量算层输出写 `<项目目录>/算量/<slug>/`，用底座 `<底座>/scripts/qto_p1_link.py` 登记。此联动只在目录上登记输入/输出与缺口，不替代本技能既有算法、口径与复核。
+
+## 环境与运行时（自动解析，无需手工配置）
+
+- 所有 `scripts/*.sh` 入口都 `source scripts/runtime_env.sh`，由它统一解析三件事：
+  1. **解释器**：`CAD_SKILL_PYTHON` / `CODEX_PYTHON` → Codex 运行时 → PATH 上的 `python3.12/3.11` → `python3`（要求 ≥3.10）；
+  2. **识图底座**：`CAD_SKILL_DIR` → 同级 `../cad-file-reader` → `~/.workbuddy/skills/*/cad-file-reader` → `~/.claude` → `~/.codex`；
+  3. **依赖路径**：把「本技能 scripts + 底座 scripts + 底座 vendor」拼进 `PYTHONPATH`，`ezdxf / ezdwg / openpyxl` 等**无需全局 pip 安装**。
+- 推荐用对应的 `bash scripts/<入口>.sh`；直接 `python3 <入口>.py` 只在全局已装齐依赖时可用。
+- 依赖缺失时按 `requirements.txt` 安装：`python3 -m pip install -r requirements.txt`。

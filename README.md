@@ -25,11 +25,11 @@
 先扫描 DWG，再汇总出表：
 
 ```bash
-python scripts/mep_scan.py 平面图.dwg --out 平面.json
-python scripts/mep_scan.py 系统图.dwg --out 系统.json
-python scripts/mep_scan.py 干线平面图.dwg --out 干线.json
+bash scripts/mep_scan.sh 平面图.dwg --out 平面.json
+bash scripts/mep_scan.sh 系统图.dwg --out 系统.json
+bash scripts/mep_scan.sh 干线平面图.dwg --out 干线.json
 
-python scripts/mep_plan.py \
+bash scripts/mep_plan.sh \
   --scan 平面.json \
   --system 系统.json \
   --trunk-scan 干线.json \
