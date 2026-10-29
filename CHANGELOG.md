@@ -1,14 +1,25 @@
 # Changelog
 
+## 0.4.26
+
+- **更新发布** 补 CHANGELOG 详细条目与 README.en 版本号；三端（Codex/WorkBuddy/发布仓库）同版本同内容再次校验通过。tujian-suanliang 的 manifest tests 仅保留真实存在的 `scripts/self_test.py`（完整 tests 见本机 shangwu-suanliang 商务版）。
+- 算法、契约、权限、SKILL.md 正文与上一版无变化。
+
+## 0.4.25
+
+- **授权与保留** 新增「授权与保留」段落：作者 lis 声明本技能可商用/可再分发/可对外授权，商用前按双许可说明确认是否需联系作者申报。
+- **脱敏（发布合规）** rules 中的公司内部来源字段由「公司知识库/…/规范图集」改为「公开规范与行业通用做法整理」，不再引用公司内部资料路径。
+- **版本对齐** 本机 `~/.codex/skills`、`~/.workbuddy/skills` 与发布仓库同步同版本；算法、契约、兼容性与上一版一致，未改业务逻辑。
+
 ## 0.4.23
 
 - **修复** `mep_plan.py` 的 `from openpyxl import ...` 由模块顶层改为出表函数内延迟导入，缺库时给出安装指引而非裸 traceback；未装 openpyxl 也能正常执行 `--help`。
 - **新增** `scripts/runtime_env.sh`：统一解析 Python 解释器、识图底座目录，并把「本技能 scripts + 底座 scripts + 底座 vendor」注入 PYTHONPATH，无需全局 pip 安装。
-- **修复** 底座探测仅覆盖 `~/.codex`、`~/.claude`，现增加同级目录与 `~/.workbuddy/skills/*/cad-file-reader`；自动安装落点由硬编码 `~/.codex` 改为与技能同级目录。
+- **修复** 底座探测仅覆盖 `$HOME/.codex`、`~/.claude`，现增加同级目录与 `~/.workbuddy/skills/*/cad-file-reader`；自动安装落点由硬编码 `$HOME/.codex` 改为与技能同级目录。
 - **新增** `requirements.txt` 与 Windows 启动器 `mep_scan.cmd` / `mep_plan.cmd` / `anzhuang_statesync.cmd`（静态校验，未实机验证）。
 - **文档** CLI 示例改为 `bash scripts/*.sh`；清理 `## 依赖` 空标题。
 - **修复（发布兼容）** `mep_plan.py` 调用 `cad_validate.sh` 改为 `bash` 启动；`ensure_base.sh` / `setup.sh` 内部调用同样改为 `bash`，不依赖执行位。
-- **修复（跨 Agent）** `mep_plan.py` 底座探测增加同级目录与 `~/.workbuddy/skills/*`，保留 `~/.claude`、`~/.codex` 回退。
+- **修复（跨 Agent）** `mep_plan.py` 底座探测增加同级目录与 `~/.workbuddy/skills/*`，保留 `~/.claude`、`$HOME/.codex` 回退。
 
 ## 0.4.22 (2026-10-23)
 - 修复 SkillHub 版 Windows 无 `.cmd` 时的接线说明：改为 `python scripts/*_statesync.py` 等价调用（bus 安装用 `python install_py.py --apply`）；GitHub 完整包保留 `.cmd`。平台发布调整，算法/契约/口径不变。
