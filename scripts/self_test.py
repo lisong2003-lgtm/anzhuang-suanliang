@@ -16,10 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from mep_plan import (  # noqa: E402
-    box_circuits, boxed_system_specs, connectivity_check, conservation_row,
+    box_circuits, boxed_system_specs, cluster_unmatched, connectivity_check, conservation_row,
     device_rows, material_rows, match_circuits, parse_spec, spec_tables,
     support_estimates, trunk_cables, riser_identification, trunk_routes,
-    unmatched_clusters, tray_route_totals, water_diameter,
+    tray_route_totals, water_diameter,
     water_segment_specs, water_system, water_zone, wire_expanded_length,
     measurement_candidates,
     mep_relations,
@@ -59,7 +59,7 @@ def main() -> None:
                      ["WIRE-照明", 5_000_000, 20_000, 20_000],
                      ["WIRE-照明", 5_000_000, 999_000, 999_000]],
     }
-    by_spec, by_layer, amb = match_circuits(
+    by_spec, by_layer, amb, unmatched_rows = match_circuits(
         [plan], specs, radius_mm=30_000, high_radius_mm=10_000
     )
     assert abs(by_spec["WDZC-BYJ-3X2.5-PC20"]["length_mm"] - 10_000_000) < 1e-6
@@ -74,7 +74,7 @@ def main() -> None:
     assert boxes[0]["spec"] == "WDZC-BYJ-3X2.5-PC20"
     assert boxes[0]["length_mm"] == 10_000_000 and boxes[0]["objects"] == 2
 
-    clusters = unmatched_clusters([plan], specs, radius_mm=30_000)
+    clusters = cluster_unmatched(unmatched_rows)
     assert len(clusters) == 1 and clusters[0]["length_mm"] == 5_000_000, clusters
     assert clusters[0]["layers"]["WIRE-照明"] == 5_000_000
 
@@ -188,7 +188,11 @@ def main() -> None:
     assert is_electric_route_layer("景观照明-路灯")
     assert is_pipe_route_layer("室外给水-给水")
     assert is_pipe_route_layer("综合管网-雨水")
-    assert is_pipe_route_layer("DIM_污水")
+    # 0.4.29：DIM_*/EQUIP_* 是标注/设备图层，不再算水专业路由
+    assert not is_pipe_route_layer("DIM_污水")
+    assert not is_pipe_route_layer("EQUIP-消防")
+    # WIRE-* 只进电气，不进水专业，避免同一批管长进两张表
+    assert not is_pipe_route_layer("WIRE-消防")
     assert is_pipe_route_layer("HEATER")
     assert is_electric_route_layer("管线-动照管线")
     assert is_tray_route_layer("SITE_TRAY-电缆沟")

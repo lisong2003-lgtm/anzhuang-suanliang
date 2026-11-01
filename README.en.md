@@ -1,6 +1,6 @@
 # Installation/Mechanical-Electrical-Plumbing (MEP) Rough Quantity Takeoff
 
-> anzhuang-suanliang (anzhuang-suanliang) v0.4.26 · overseas-friendly lightweight layer. 中文版见 [README.md](README.md).
+> anzhuang-suanliang (anzhuang-suanliang) v0.4.29 · overseas-friendly lightweight layer. 中文版见 [README.md](README.md).
 
 ## What it is
 Extracts MEP rough-quantity working papers and material-plan drafts from installation DWG/scanned indexes. It groups pipes by circuit and size, expands wire cores and reserved lengths, and estimates cable, cable tray, water/supply, sprinkler, supports/hangers and equipment counts for budgeting, material planning, drawing-review cross-checks and professional-software reconciliation.

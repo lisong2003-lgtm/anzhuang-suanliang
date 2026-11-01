@@ -2,7 +2,7 @@
 name: anzhuang-suanliang
 slug: anzhuang-suanliang
 displayName: 安装算量 · 概算底稿与物资计划双口径
-version: 0.4.26
+version: 0.4.31
 platforms: [macos, windows, linux]
 author: lis
 license: CC-BY-NC-SA-4.0
@@ -16,6 +16,17 @@ locales: [zh-CN, en-US]
 
 # 安装算量（概算清单 + 物资计划双口径）
 
+## 识图契约红线（硬规则，禁止绕行）
+- 算量技能**不得单独识别 DWG/DXF/PDF**：识图必须由 `cad-file-reader` 完成一次，产出统一契约后各算量技能共享复用（同一张图只解析一次）。
+- **禁止算量技能自行 `import ezdwg/read_cad`、自带或重新下载 cad-file-reader 来解图**；底座缺失时如实标 `unavailable`，不得降级成“自己解图”。
+- 用户要算量 = 必须先走 `cad-file-reader → 契约 → 算量`；计算入口默认拒绝直接 DWG，开发/回归调试才能用显式 `CAD_ALLOW_DIRECT=1` 逃生。
+- `lis-skill-bus` 是连接 cad-file-reader 契约与各算量技能的唯一定接线；算量结果必须带契约来源（图号/坐标证据）。
+- **DWG 解码兜底只能在 cad-file-reader 内完成**：遇到 ezdwg/libredwg 读不了的 ACAD 新变体/损坏卷（实测例：sample-site结构 2#/3#），由 cad-file-reader 用独立 `ODAFileConverter` 在副本上转 DXF 复扫并回读校验；本技能**不得自行调用 CAD/看图 App/ODAFileConverter 解图**，只消费底座给出的契约 JSON。
+- **内存双档**：常规识图默认 `CAD_MEM_LIMIT_MB=4096`（mem_guard 默认）；仅实测超 4GB 的真实大图且串行跑时临时覆盖 `CAD_MEM_LIMIT_MB=8192`，不全局改默认；mem_guard 只在识图子进程内自终止，不杀 WorkBuddy/Codex。
+
+
+> **融合入口**：本技能可单独使用；若手上是一整套图纸、要跨专业出一张总表，用 `cad-suite` 一个入口即可跑完发现→识图→关系→聚合→跨专业对照→算量→出表，不必逐个调用。口径与红线在 cad-suite 里是同一份。
+
 ## 0.2.0 优化概况
 
 - 对接 `cad-file-reader >= 0.25.0`，扫描结果记录底座版本和测量候选兼容状态。
@@ -25,11 +36,13 @@ locales: [zh-CN, en-US]
 两步出表：先扫描 DWG 建索引，再用索引生成 xlsx。
 
 ```bash
-# 1. 扫描；平面图、系统图、说明图、干线图可分开出 JSON
-bash scripts/mep_scan.sh 平面图.dwg --out 平面.json
-bash scripts/mep_scan.sh 系统图.dwg --out 系统.json
-bash scripts/mep_scan.sh 设计说明或立面图.dwg --out 说明.json
-bash scripts/mep_scan.sh 干线平面图.dwg --out 干线.json
+# 1. 识图与扫描两条路（识图契约红线）：识图只由 cad-file-reader 产出契约，同一张图只解析一次
+#    a) 已有 cad-file-reader 契约（cad_scan/cad_mep_geometry 产物）时只消费契约，不再打开 DWG：
+bash scripts/mep_scan.sh 平面_契约.json --contract --out 平面.json
+bash scripts/mep_scan.sh 系统_契约.json --contract --out 系统.json
+bash scripts/mep_scan.sh 说明_契约.json --contract --out 说明.json
+bash scripts/mep_scan.sh 干线_契约.json --contract --out 干线.json
+#    b) 直接传 DWG 默认被拒（exit 2，提示先走 cad-file-reader）；仅回归/调试可用 CAD_ALLOW_DIRECT=1 逃生
 
 # 2. 生成双口径表；已有 .scan.json 时不要重新扫 DWG
 bash scripts/mep_plan.sh \
@@ -39,7 +52,26 @@ bash scripts/mep_plan.sh \
   --out-prefix 安装计划
 ```
 
-输出包含：口径、规范约束、双口径映射、导管与桥架、电线电缆、干线电缆、设备、匹配情况、配电箱回路、未匹配坐标簇、分层、水专业、水系统分区、连通性核对、立管识别、支架估算、置信度分级、总量守恒、材料表提取、材料归并、立管估算、核对清单。
+输出包含：口径、规范约束、双口径映射、导管与桥架、电线电缆、干线电缆、设备、图层分档、配电箱回路、未匹配坐标簇、分层、水专业、水系统分区、连通性核对、立管识别、支架估算、置信度分级、总量守恒、材料表提取、材料归并、立管估算、核对清单。
+
+## 图层与匹配口径（0.4.29）
+
+- **图层先分档再出量**：`DIM-*`（标注）、`EQUIP-*`（设备符号）、图框/墙体/轴网/文字一律不计入任何量；每层归「电气回路 / 桥架 / 水专业 / 非管线路由 / 未归类」，见「图层分档」表。
+- **电气优先于水**：`WIRE-消防` 是消防联动线路，只进电线电缆，不进水专业——早期两条判据互不排斥，同一批管长会进两张表、全楼量翻倍。
+- **回路标注两种形态都认**：平面图有 `W1:规格` 就按回路号匹配；只标裸规格（`WDZ-BYJ-3*10-(CT)PVC32-FWC`）时按规格就近匹配，回路列记 `-`。
+- **匹配距离按「点到线段」**：扫描端给每段线带两端坐标，一条 60m 直线标在端头的规格也够得到；标注够不到的线段再按「相邻传播」（同层 2.5m 内接力定规格，置信度记低）。
+- **未出量要交代去向**：某层未出量超过 30% 时，「图层分档」直接给出主规格候选与占比，便于人工一次确认；「总量守恒」区分 通过 / 未出量 / 异常 三态，不再恒等通过。
+
+## 市政管长汇总（0.4.30，吃识图包产物）
+
+吃 cad-file-reader 市政识图包的 `*.municipal.json`（管道标注：系统/管径/原文 + 市政图层几何段）：
+
+```bash
+# 先识图：bash ../../cad-file-reader/scripts/cad_municipal_geometry.sh 市政详情.json --out-dir 市政识图
+scripts/municipal_pipe_length.sh --municipal 市政识图/xxx.municipal.json --out-prefix 市政管长
+```
+
+长度三档证据：① 标注文本 `L=25000` / `长度4500`（置信高）② 桩号差 `K0+240.5~K0+412.3`（纵断面主口径，跨千米进位）③ 管道图层面线段合计（按该图层管道标注的系统多数派归属，管径记「未标注」）。系统已有显式长度时其图面线段整体跳过（防重复计数）。输出按系统 × 管径汇总，标 final_quantity=false（图面长度，不含井段扣减/弯曲增长，非施工下料长度）。
 
 ## 显式依赖与降级（0.9+）
 ## 强依赖底座说明（cad-file-reader 强依赖，不做弱化）
@@ -60,7 +92,7 @@ bash scripts/mep_plan.sh \
 - 依赖 `cad-file-reader >= 0.25.0`；扫描结果会记录底座版本和测量候选兼容状态。
 - 可用 `cad_measure.sh` 先生成长度/面积/体积识图候选，再通过 `mep_plan.py --cad-measurement` 导入“CAD测量候选核对”工作表；候选固定 `final_quantity=false`，不参与本技能算量。
 
-- `cad-file-reader` 仅用于 `mep_scan.py` 读 DWG；找不到时设置 `CAD_SKILL_DIR=/path/to/cad-file-reader`。
+- `cad-file-reader` 负责全部 DWG/DXF/PDF 识图并产出 MEP 契约；`mep_scan.sh --contract` 只消费契约 JSON，不再打开 DWG。找不到时设置 `CAD_SKILL_DIR=/path/to/cad-file-reader`。
 - `mep_plan.py` 只读 `.scan.json`，不依赖 CAD 解析。
 - Python ≥3.10；openpyxl 生成 xlsx。
 
@@ -78,7 +110,7 @@ bash scripts/mep_plan.sh \
 - 水系统分区＝按 PIPE 图层归并系统和高/中/低、室外等尾缀分区；分区表只拆分水平长度，不重复计总量。
 - 连通性核对＝同图同系统/同管径端点吸附，输出开路端点、孤立段和疑似跨层/跨分区坐标簇；只回图确认，不改总长。
 - 立管编号＝水专业标注层的 `JL/PL/TL/FL/WL/YL/HL/RL/HYL/SPL-编号`；同号跨图只计 1 根，折算长度按层高推定并标 [推测]。
-- 置信度＝高（直接近距标注）、中（远距标注/歧义/邻近兜底）、低（未标注或未匹配）；总量守恒表核对源总长与分档合计。
+- 置信度＝高（直接近距标注）、中（远距标注/歧义/邻近兜底）、低（相邻传播/未标注）；总量守恒表核对源总长与分档合计，区分 通过/未出量/异常。
 - 支架＝按水专业图层/管径最大间距向上取整，桥架按水平吊架间距估算；仅供物资备料。
 - 干线电缆＝系统图规格次数 + 干线平面/母线层就近规格匹配；无就近规格标注时按图层列“未分配量”，不硬分配规格。
 - 立管＝配置里人工填根数×层高×(楼层数-1)，输出标 [推测]。
@@ -93,7 +125,7 @@ bash scripts/mep_plan.sh \
 1. 输出是概算底稿和物资计划草稿；不是定额级清单、结算量或竣工计量。
 2. 不输出金额、单价、措施费、规费和税金。
 3. 未含竖向实测长度、管件、套管；立管识别只按图面编号折算；支架仅按间距估算。
-4. 回路标注覆盖不到的管长归“匹配情况-未匹配”，按图层出量，需人工分档。
+4. 回路标注覆盖不到的管长归「图层分档-未出量」，并给出主规格候选；不擅自按主规格回填数量，需人工确认后分档。
 5. 水专业邻近管段兜底只是计划口径补充，抽查主干变径点后再提报。
 6. 同一设备出现在多张图时按各图分别计数后合计，跨图重复需人工剔除。
 7. 天正自定义实体的投影线可能与实际管线有出入，抽查 3~5 处回图核对后再提报。
@@ -136,3 +168,17 @@ bash scripts/mep_plan.sh \
   3. **依赖路径**：把「本技能 scripts + 底座 scripts + 底座 vendor」拼进 `PYTHONPATH`，`ezdxf / ezdwg / openpyxl` 等**无需全局 pip 安装**。
 - 推荐用对应的 `bash scripts/<入口>.sh`；直接 `python3 <入口>.py` 只在全局已装齐依赖时可用。
 - 依赖缺失时按 `requirements.txt` 安装：`python3 -m pip install -r requirements.txt`。
+
+## 授权与保留
+
+本技能以 **CC-BY-NC-SA-4.0** 授权给公众：可自由使用与改造，但**仅限非商业用途**（个人学习、研究与非营利使用）；改造后若公开发布，须以相同条款授权。
+
+企业、机构或将本技能用于经营性项目（如承接工程造价、算量咨询业务）的商业使用，需另行取得作者书面授权。
+
+作者（lis）作为著作权人，不受上述许可限制，明确保留以下权利：
+
+1. 将本作品用于任何商业目的；
+2. 改造、再发布、封装为收费商品或服务；
+3. 向第三方授予商业使用授权。
+
+完整许可文本见 `LICENSE.md`。

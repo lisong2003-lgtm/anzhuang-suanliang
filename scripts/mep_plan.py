@@ -51,7 +51,17 @@ RISER_SYSTEMS = {
 TRUNK_CABLE = re.compile(
     r"\b(WD[A-Z]{0,4}[-–][A-Z]{2,4}[-–][0-9xX×.+]+(?:\+[0-9xX×.+]+)*(?:[-–][A-Z0-9/.]+)*)"
 )
-CONDUIT_RE = re.compile(r"\b(PC|SC|MT|KBG|JDG|TC)[- ]?(\d{2,3})\b", re.I)
+CONDUIT_RE = re.compile(r"\b(PVC|PC|SC|MT|KBG|JDG|TC|CPVC)[- ]?(\d{2,3})\b", re.I)
+# 电线规格的数x芯写法：`3*10` `3x10` `3×10` `2*2.5+1*2.5` 都出现过，
+# 早期只认 x/×，实测华山这批图一律写 `*`（`WDZ-BYJ-3*10`），整个规格解析不下来。
+SIZE_TAIL_RE = re.compile(r"([0-9xX×*.+]+)$")
+SIZE_SPLIT_RE = re.compile(r"[xX×*]")
+# 芯数×截面：`3*10` `3x10` `3×2.5` `4*25+1*16`（取第一组，多芯组合另算）
+SIZE_CORE_RE = re.compile(r"(\d{1,2})\s*[xX×*]\s*(\d+(?:\.\d+)?)")
+# 规格家族开头：有这些才算「电线/电缆规格串」，避免把尺寸标注当成规格
+SPEC_FAMILY_RE = re.compile(
+    r"^(?:WDZ[A-Z]*|WDZA|WDZB|WDZC|ZR|NH|BTLY|NG-A|BV|BVR|BYJ|RVV|RVVP|YJV|YJY|KVV|BLV)",
+    re.I)
 DOOR_CODE = re.compile(r"^[MXZ]?C?\d{4}$")
 TAG_CODE = re.compile(r"^[A-Z]{1,2}[-]?\d+$")
 TABLE_TAGS = {"WHAT", "SN", "SNN", "SPEC", "UNIT", "UN", "数量", "TYPE"}
@@ -59,18 +69,54 @@ UNICODE_ESCAPE_RE = re.compile(r"(?:\\U\+|U\+)([0-9A-Fa-f]{4})")
 ELECTRIC_ROUTE_RE = re.compile(r"(WIRE|LGT|BUSB|强电|弱电|电缆|照明线路|景观照明|路灯|SITE[_-]?(?:WIRE|LIGHT)|DIM-动力|管线-动照|管线-供电)", re.I)
 PIPE_ROUTE_RE = re.compile(r"(PIPE|管网|综合管网|室外管网|雨水|污水|废水|给水|中水|消防|喷淋|燃气|热力|暖通|采暖|供热|SITE[_-]?PIPE|DIM_|EQUIP_|管线-|HEATER|HEATING)", re.I)
 TRAY_ROUTE_RE = re.compile(r"(CABLETRAY|电缆沟|电缆排管|强电排管|弱电排管|SITE[_-]?TRAY)", re.I)
+# 「不是管线」的图层：标注、图框、墙体、轴网、文字、楼梯。
+# 实测华山 J-5 电气图 `DIM-照明` 11329.9m、`DIM_SYMB` 1638.3m 全落在标注图层上，
+# 而 PIPE_ROUTE_RE 里的 `DIM_` / `ELEV` 又让 `DIM_SYMB`、`DIM-消防` 命中「水专业」，
+# 于是 1.6km 尺寸线被算成水管道。判据必须排在路由判据之前。
+NON_ROUTE_RE = re.compile(
+    r"^(?:DIM|DIMENSION)|标注|尺寸|图框|标题|会签|PUB[_-]?TITLE|^WALL$|墙体|^STAIR|楼梯"
+    r"|^AXIS|轴网|^DOTE$|^TEXT|文字|^HATCH|填充|图例|^EQUIP[_-]|设备图",
+    re.I)
+
+
+def is_non_route_layer(layer: str) -> bool:
+    """标注/图框/设备符号/建筑底图类图层，任何路由判据都不该命中它们。
+
+    `EQUIP-*` 是设备符号层：里面是块参照炸开的符号线，按线长算管道会把
+    一个消防栓算成几米管（实测 J-5 电气图 `EQUIP-消防` 602.5m 全被当成水管）。
+    设备量走 ATTRIB 计数，不走线长。
+    """
+    return bool(NON_ROUTE_RE.search(layer or ""))
 
 
 def is_electric_route_layer(layer: str) -> bool:
-    return bool(ELECTRIC_ROUTE_RE.search(layer))
+    return not is_non_route_layer(layer) and bool(ELECTRIC_ROUTE_RE.search(layer))
 
 
 def is_pipe_route_layer(layer: str) -> bool:
+    # 电气优先：`WIRE-消防` 是消防联动/报警线路，不是消防水管。
+    # 早期两条判据互不排斥，同一批 841.7m 既进「电线电缆」又进「水专业」，
+    # 全楼管线量凭空多出一份。
+    if is_non_route_layer(layer) or is_electric_route_layer(layer):
+        return False
     return bool(PIPE_ROUTE_RE.search(layer))
 
 
 def is_tray_route_layer(layer: str) -> bool:
-    return bool(TRAY_ROUTE_RE.search(layer))
+    return not is_non_route_layer(layer) and bool(TRAY_ROUTE_RE.search(layer))
+
+
+def layer_role(layer: str) -> tuple[str, str]:
+    """图层 -> (归属, 说明)。用于「图层分档」与「总量守恒」两张表对齐口径。"""
+    if is_non_route_layer(layer):
+        return "非管线路由", "标注/图框/设备符号类，不计入任何量"
+    if is_tray_route_layer(layer):
+        return "桥架", "按图层出量，不走回路规格匹配"
+    if is_electric_route_layer(layer):
+        return "电气回路", "按就近回路/规格标注匹配"
+    if is_pipe_route_layer(layer):
+        return "水专业", "按就近 DN 标注匹配"
+    return "未归类", "图层名无路由关键字，未计入任何量"
 
 
 def load(path: str) -> dict:
@@ -166,12 +212,13 @@ def box_circuits(scans: list[dict], specs: dict[str, Counter], radius_mm: float,
             m = BOX_CIRCUIT.search(decode_cad_text(t["text"]))
             if m:
                 labels.append((m.group(1), m.group(2), t["x"], t["y"]))
-        for layer, length, x, y in scan.get("segments", []):
+        for seg in scan.get("segments", []):
+            layer, length, x, y = seg[0], seg[1], seg[2], seg[3]
             if not is_electric_route_layer(layer):
                 continue
             best, best_d = None, None
             for box, token, lx, ly in labels:
-                d = math.hypot(x - lx, y - ly)
+                d = seg_distance(seg, lx, ly)
                 if best_d is None or d < best_d:
                     best, best_d = (box, token), d
             if not best or best[1] not in specs or best_d > radius_mm:
@@ -192,31 +239,25 @@ def box_circuits(scans: list[dict], specs: dict[str, Counter], radius_mm: float,
     ]
 
 
-def unmatched_clusters(scans: list[dict], specs: dict[str, Counter], radius_mm: float,
-                       grid_mm: float = 50_000, max_rows: int = 50) -> list[dict]:
-    """未匹配电气管段按 50m 网格汇总，便于按坐标回图核对。"""
+def cluster_unmatched(rows: list[dict], grid_mm: float = 50_000,
+                      max_rows: int = 50) -> list[dict]:
+    """未匹配管段按 50m 网格汇总，便于按坐标回图核对。
+
+    入参是匹配函数**实际没定下规格**的线段，不再在这里重算一遍——
+    重算会和传播/端点距离口径不一致，出现「表里说未匹配、坐标簇里没有」。
+    """
     clusters: dict[tuple[str, int, int], dict] = defaultdict(
         lambda: {"length_mm": 0.0, "objects": 0, "layers": Counter(), "samples": []}
     )
-    for scan in scans:
-        labels = plan_labels(scan)
-        for layer, length, x, y in scan.get("segments", []):
-            if not is_electric_route_layer(layer):
-                continue
-            best, best_d = None, None
-            for token, lx, ly in labels:
-                d = math.hypot(x - lx, y - ly)
-                if best_d is None or d < best_d:
-                    best, best_d = token, d
-            if best and best in specs and best_d <= radius_mm:
-                continue
-            gx, gy = math.floor(x / grid_mm), math.floor(y / grid_mm)
-            rec = clusters[(scan.get("file", ""), gx, gy)]
-            rec["length_mm"] += length
-            rec["objects"] += 1
-            rec["layers"][layer] += length
-            if len(rec["samples"]) < 1:
-                rec["samples"].append(f"({x:,.0f},{y:,.0f})")
+    for row in rows:
+        x, y = row["x"], row["y"]
+        gx, gy = math.floor(x / grid_mm), math.floor(y / grid_mm)
+        rec = clusters[(row["file"], gx, gy)]
+        rec["length_mm"] += row["length_mm"]
+        rec["objects"] += 1
+        rec["layers"][row["layer"]] += row["length_mm"]
+        if len(rec["samples"]) < 1:
+            rec["samples"].append(f"({x:,.0f},{y:,.0f})")
     ordered = sorted(clusters.items(), key=lambda item: -item[1]["length_mm"])[:max_rows]
     return [{"file": file, "gx": gx, "gy": gy, **rec}
             for (file, gx, gy), rec in ordered]
@@ -599,14 +640,15 @@ def trunk_routes(trunk_scans: list[dict], radius_mm: float = 30000):
     confidence: dict[str, defaultdict] = defaultdict(lambda: defaultdict(float))
     for scan in trunk_scans:
         labels = trunk_labels(scan)
-        for layer, length, x, y in scan.get("segments", []):
+        for seg in scan.get("segments", []):
+            layer, length, x, y = seg[0], seg[1], seg[2], seg[3]
             if not is_trunk_route_layer(layer):
                 continue
             routes[layer][0] += length
             routes[layer][1] += 1
             best, best_d = None, None
             for spec, lx, ly in labels:
-                d = math.hypot(x - lx, y - ly)
+                d = seg_distance(seg, lx, ly)
                 if best_d is None or d < best_d:
                     best, best_d = spec, d
             if best and best_d <= radius_mm:
@@ -619,33 +661,43 @@ def trunk_routes(trunk_scans: list[dict], radius_mm: float = 30000):
 
 
 def parse_spec(spec: str) -> dict:
-    """规格串 -> {cable, wire_size, cores, conduit, is_cable, tray}。"""
+    """规格串 -> {conduit, tray, cores, core_size, is_cable, family}。
+
+    芯数×截面必须**在整串里找**，不能取 `split("-")[2]`：
+    `BV-2*2.5-SC15` 的第三段是 `SC15`，照旧写法定会解析成「15 芯」。
+    """
     conduit_m = CONDUIT_RE.search(spec)
     conduit = f"{conduit_m.group(1).upper()}{conduit_m.group(2)}" if conduit_m else ""
     tray = not conduit and "MR" in spec.upper()
-    size_m = re.search(r"([0-9xX×.+]+)$", spec.split("-")[2] if len(spec.split("-")) > 2 else "")
-    cores = 1
-    core_size = ""
+    cores, core_size = 1, ""
+    size_m = SIZE_CORE_RE.search(spec)
     if size_m:
-        parts = re.split(r"[xX×]", size_m.group(1))
-        if parts and parts[0].isdigit():
-            cores = int(parts[0])
-            core_size = parts[1] if len(parts) > 1 else ""
-    is_cable = bool(re.search(r"YJV|YJY|YJY", spec, re.I))
-    family = spec.split("-")[1] if "-" in spec else spec
+        cores = int(size_m.group(1))
+        core_size = size_m.group(2)
+    else:
+        # 单芯写法：BV-2.5 / BV-2.5-SC15，取第一个独立的数值段
+        single = re.search(r"[-–](\d+(?:\.\d+)?)(?=[-–]|$)", spec)
+        if single:
+            core_size = single.group(1)
+    is_cable = bool(re.search(r"YJV|YJY", spec, re.I))
+    head = re.split(r"[-–]", spec)
+    # 型号家族取「首段-次段」且次段是纯字母时才算（WDZ-BYJ / WDZ-YJV），
+    # 否则只取首段（BV / RVV）——否则会把 `2*2.5` 当成家族名
+    family = (f"{head[0]}-{head[1]}" if len(head) > 1 and head[1].isalpha() else head[0]).upper()
     return {"spec": spec, "conduit": conduit, "tray": tray, "cores": cores,
             "core_size": core_size, "is_cable": is_cable, "family": family}
 
 
 def match_circuits(scans: list[dict], specs: dict[str, Counter], radius_mm: float,
                    high_radius_mm: float | None = None):
-    """段 -> 最近回路标注。返回 (按规格合计, 按图层匹配/未匹配, 歧义回路)。"""
+    """段 -> 最近回路标注。返回 (按规格合计, 按图层匹配/未匹配, 歧义回路, 未定规格线段)。"""
     high_radius = radius_mm / 3 if high_radius_mm is None else high_radius_mm
     by_spec = defaultdict(lambda: {"length_mm": 0.0, "circuits": set(),
                                    "sources": Counter(), "samples": [],
                                    "confidence": defaultdict(float)})
     by_layer = defaultdict(lambda: {"total": 0.0, "matched": 0.0})
     ambiguous = Counter()
+    unmatched: list[dict] = []
     for scan in scans:
         labels = plan_labels(scan)
         for seg in scan.get("segments", []):
@@ -656,10 +708,12 @@ def match_circuits(scans: list[dict], specs: dict[str, Counter], radius_mm: floa
                 continue  # 桥架/PIPE 等不走回路规格，按图层单独出量
             best, best_d = None, None
             for token, lx, ly in labels:
-                d = math.hypot(x - lx, y - ly)
+                d = seg_distance(seg, lx, ly)
                 if best_d is None or d < best_d:
                     best, best_d = token, d
             if best is None or best_d > radius_mm or best not in specs:
+                unmatched.append({"file": scan.get("file", ""), "layer": layer,
+                                  "length_mm": length, "x": x, "y": y})
                 continue
             counter = specs[best]
             if len(counter) > 1:
@@ -673,7 +727,189 @@ def match_circuits(scans: list[dict], specs: dict[str, Counter], radius_mm: floa
             if len(by_spec[spec]["samples"]) < 3:
                 by_spec[spec]["samples"].append(f"({x:,.0f},{y:,.0f})")
             by_layer[layer]["matched"] += length
-    return by_spec, by_layer, ambiguous
+            by_layer[layer].setdefault("specs", Counter())[spec] += length
+    return by_spec, by_layer, ambiguous, unmatched
+
+
+def clean_spec(text: str) -> str:
+    """规格串规范化：去空格、全角括号转半角、× 统一成 *。"""
+    s = re.sub(r"\s+", "", decode_cad_text(text))
+    s = s.replace("（", "(").replace("）", ")").replace("×", "*").replace("–", "-")
+    return s.strip(":：,，。;；").upper()
+
+
+def looks_like_spec(s: str) -> bool:
+    """判断一段文字是不是「只有规格、没有回路号」的回路标注。
+
+    实测华山这批电气图平面上一律写 `WDZ-BYJ-3*10-(CT)PVC32-FWC`，
+    回路号（W1/WL2…）只出现在配电系统图上。早期实现要求「回路号:规格」，
+    于是一整栋楼的电气管线全部匹配失败、电线电缆表 0 行。
+    """
+    if not (6 <= len(s) <= 60):
+        return False
+    if not SPEC_FAMILY_RE.match(s):
+        return False
+    if s.count("-") < 2:
+        return False
+    return bool(SIZE_CORE_RE.search(s))
+
+
+def plan_spec_labels(scan: dict) -> list[tuple[str, float, float]]:
+    """平面图上的「裸规格」标注点。"""
+    out = []
+    for t in scan.get("texts", []):
+        spec = clean_spec(t.get("text") or "")
+        if looks_like_spec(spec):
+            out.append((spec, t.get("x", 0.0), t.get("y", 0.0)))
+    return out
+
+
+def seg_distance(seg: list, lx: float, ly: float) -> float:
+    """标注点到线段的距离（mm）。
+
+    扫描端 0.4.29 起给每个线段带上两端坐标，这里算真正的「点到线段」距离：
+    一条 60m 直线只有中点时，标在两端也超过 30m 半径，会被判成匹配不上。
+    老扫描 JSON 没有端点（长度 4），退回中点到标注点的距离。
+    """
+    if len(seg) >= 8:
+        x1, y1, x2, y2 = seg[4], seg[5], seg[6], seg[7]
+        dx, dy = x2 - x1, y2 - y1
+        den = dx * dx + dy * dy
+        if den <= 1e-9:
+            return math.hypot(lx - x1, ly - y1)
+        t = max(0.0, min(1.0, ((lx - x1) * dx + (ly - y1) * dy) / den))
+        return math.hypot(lx - (x1 + t * dx), ly - (y1 + t * dy))
+    return math.hypot(lx - seg[2], ly - seg[3])
+
+
+def match_plan_specs(scans: list[dict], radius_mm: float,
+                     propagate_radius_mm: float = 2500.0,
+                     propagate_rounds: int = 3) -> tuple[dict, dict, int, float]:
+    """没有回路号时按「规格标注」就近匹配线段，仍按规格分档出量。
+
+    回路号缺失只影响「分回路」这一层，不影响按规格算管长/线长——
+    概算要的正是按规格分档的量。回路列留空（记为 `-`）并在口径页说明。
+
+    距离法只够照到标注附近：实测 J-5 照明线 3289m 里，30m 内只有 1396m。
+    剩下的一大半并不在别的回路上，而是同一条回路的远端——同一回路的线是连着的，
+    所以再跑一轮「相邻传播」：已定规格的线段把规格传给 2.5m 内未定的同层线段。
+    传播来的量在「置信度分级」里记低，和直接命中的量分开，方便人工只抽查低置信度那部分。
+    """
+    by_spec: dict[str, dict] = defaultdict(
+        lambda: {"length_mm": 0.0, "circuits": set(), "sources": Counter(),
+                 "samples": [], "confidence": defaultdict(float)})
+    by_layer: dict[str, dict] = defaultdict(lambda: {"total": 0.0, "matched": 0.0})
+    label_count = 0
+    propagated_mm = 0.0
+    unmatched: list[dict] = []
+    for scan in scans:
+        labels = plan_spec_labels(scan)
+        label_count += len(labels)
+        items: list[dict] = []
+        for seg in scan.get("segments", []):
+            layer, length, x, y = seg[0], seg[1], seg[2], seg[3]
+            by_layer[layer]["total"] += length
+            if not is_electric_route_layer(layer):
+                continue
+            items.append({"layer": layer, "length": length, "x": x, "y": y,
+                          "seg": seg, "spec": None, "how": ""})
+        if not items:
+            continue
+        if labels:
+            for it in items:
+                best, best_d = None, None
+                for spec, lx, ly in labels:
+                    d = seg_distance(it["seg"], lx, ly)
+                    if best_d is None or d < best_d:
+                        best, best_d = spec, d
+                if best is not None and best_d <= radius_mm:
+                    it["spec"], it["how"] = best, "标注"
+        if propagate_radius_mm > 0:
+            propagate_route_specs(items, propagate_radius_mm, propagate_rounds)
+        for it in items:
+            spec = it["spec"]
+            length = it["length"]
+            if not spec:
+                unmatched.append({"file": scan.get("file", ""), "layer": it["layer"],
+                                  "length_mm": length, "x": it["x"], "y": it["y"]})
+                continue
+            rec = by_spec[spec]
+            rec["length_mm"] += length
+            rec["circuits"].add("-")
+            if it["how"] == "传播":
+                rec["confidence"]["低"] += length
+                propagated_mm += length
+            else:
+                rec["confidence"]["中"] += length
+            rec["sources"][scan.get("file", "")] += length
+            if len(rec["samples"]) < 3:
+                rec["samples"].append(f"({it['x']:,.0f},{it['y']:,.0f})")
+            by_layer[it["layer"]]["matched"] += length
+            by_layer[it["layer"]].setdefault("specs", Counter())[spec] += length
+    return by_spec, by_layer, label_count, propagated_mm, unmatched
+
+
+def _item_distance(a: dict, b: dict) -> float:
+    """线段 a 到线段 b 的距离（mm）：两端点对端点集取最小；无端点时退回中点距。"""
+    sa, sb = a.get("seg") or [], b.get("seg") or []
+    if len(sa) >= 8 and len(sb) >= 8:
+        return min(
+            seg_distance(sa, sb[4], sb[5]), seg_distance(sa, sb[6], sb[7]),
+            seg_distance(sb, sa[4], sa[5]), seg_distance(sb, sa[6], sa[7]),
+        )
+    return math.hypot(a["x"] - b["x"], a["y"] - b["y"])
+
+
+def _anchor_cells(it: dict, cell: float) -> list[tuple[int, int]]:
+    """线段占用的网格：中点 + 两端，长线不会被当成只有一个点。"""
+    cells = [(int(it["x"] // cell), int(it["y"] // cell))]
+    seg = it.get("seg") or []
+    if len(seg) >= 8:
+        for px, py in ((seg[4], seg[5]), (seg[6], seg[7])):
+            c = (int(px // cell), int(py // cell))
+            if c not in cells:
+                cells.append(c)
+    return cells
+
+
+def propagate_route_specs(items: list[dict], radius_mm: float, rounds: int = 3) -> int:
+    """把已定规格传给相邻未定线段；返回传播成功的线段数。
+
+    不做连通图追踪——同层平行走的线多半同回路同规格，追连通反而容易漏。
+    层不同绝不传播（强电/弱电不能串）。
+    """
+    cell = max(radius_mm, 1.0)
+    total = 0
+    for _ in range(max(int(rounds), 0)):
+        grid: dict[tuple[int, int], list[dict]] = defaultdict(list)
+        for it in items:
+            if it["spec"]:
+                for c in _anchor_cells(it, cell):
+                    grid[c].append(it)
+        changed = 0
+        for it in items:
+            if it["spec"]:
+                continue
+            best, best_d = None, None
+            seen = set()
+            for c in _anchor_cells(it, cell):
+                gx, gy = c
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        for nb in grid.get((gx + dx, gy + dy), ()):
+                            if id(nb) in seen or nb["layer"] != it["layer"]:
+                                continue
+                            seen.add(id(nb))
+                            d = _item_distance(it, nb)
+                            if d <= radius_mm and (best_d is None or d < best_d):
+                                best, best_d = nb["spec"], d
+            if best:
+                it["spec"], it["how"] = best, "传播"
+                changed += 1
+        total += changed
+        if not changed:
+            break
+    return total
 
 
 def device_rows(scans: list[dict]) -> list[tuple[str, int, dict]]:
@@ -731,10 +967,23 @@ def support_estimates(by_dn: dict, dn_unmatched: dict, tray_mm: float, cfg: dict
     return rows
 
 
-def conservation_row(name: str, source_mm: float, classified_mm: float) -> list:
+def conservation_row(name: str, source_mm: float, classified_mm: float,
+                     allow_partial: bool = False) -> list:
+    """源总长 vs 分档合计。
+
+    `allow_partial`：该类图元允许「有一部分没出量」（比如某段电线就近找不到规格），
+    此时差值为正记「未出量」而不是「异常」——早期版本把 matched + (total-matched)
+    当成合计，恒等于源总长，那张表永远全「通过」，等于没核对。
+    """
     diff = source_mm - classified_mm
+    if abs(diff) <= 500:
+        status = "通过"
+    elif allow_partial and diff > 0:
+        status = "未出量"
+    else:
+        status = "异常"
     return [name, round(source_mm / 1000, 1), round(classified_mm / 1000, 1),
-            round(diff / 1000, 1), "通过" if abs(diff) <= 500 else "异常"]
+            round(diff / 1000, 1), status]
 
 
 def tray_route_totals(scans: list[dict], max_segment_mm: float = 50_000) -> tuple[float, float]:
@@ -750,6 +999,18 @@ def tray_route_totals(scans: list[dict], max_segment_mm: float = 50_000) -> tupl
             else:
                 total_mm += length_mm
     return total_mm, excluded_mm
+
+
+def tray_route_by_layer(scans: list[dict], max_segment_mm: float = 50_000) -> dict[str, float]:
+    """桥架按图层计入量（已剔除异常长线），用于和图层总长对账。"""
+    out: dict[str, float] = defaultdict(float)
+    for scan in scans:
+        for layer, length_mm, *_xy in scan.get("segments", []):
+            if not is_tray_route_layer(layer):
+                continue
+            if length_mm <= max_segment_mm:
+                out[layer] += length_mm
+    return out
 
 
 def wire_expanded_length(route_m: float, cores: int, reserve_m: float) -> float:
@@ -900,10 +1161,19 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
     boxed_specs = boxed_system_specs(
         sys_scans, cfg.get("system_box_spec_radius_mm", 250_000)
     )
-    by_spec, by_layer, ambiguous = match_circuits(
+    by_spec, by_layer, ambiguous, unmatched_rows = match_circuits(
         scans, specs, cfg.get("match_radius_mm", 30000),
         cfg.get("electrical_high_radius_mm", 10000)
     )
+    # 无线号图纸兜底：平面图只标「规格」不标「回路号」时（华山这批全是），
+    # 走规格就近匹配。有回路号时不动，避免和系统图口径重复计数。
+    plan_spec_labels_n = 0
+    propagated_mm = 0.0
+    if not by_spec:
+        by_spec, by_layer, plan_spec_labels_n, propagated_mm, unmatched_rows = match_plan_specs(
+            scans, cfg.get("match_radius_mm", 30000),
+            float(cfg.get("propagate_radius_mm", 2500)),
+            int(cfg.get("propagate_rounds", 3)))
 
     conduits, cables, wires = [], [], []
     for spec, rec in sorted(by_spec.items(), key=lambda kv: -kv[1]["length_mm"]):
@@ -931,6 +1201,18 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
     dev_loss = cfg["device_loss_pct"] / 100
     tray_max_segment_mm = max(float(cfg.get("tray_max_segment_mm", 50_000)), 1.0)
     tray_mm, tray_excluded_mm = tray_route_totals(scans, tray_max_segment_mm)
+    # 水专业/桥架的分档量提前算出来，「图层分档」和「总量守恒」两张表才能跟源总长对账
+    water_records = water_segment_specs(
+        scans,
+        cfg.get("water_match_radius_mm", 15000),
+        cfg.get("water_fallback_radius_mm", 30000),
+    )
+    by_dn, dn_inferred, dn_unmatched = water_diameter_from_records(water_records)
+    water_done_by_layer: dict[str, float] = defaultdict(float)
+    for rec in water_records:
+        if rec["dn"]:
+            water_done_by_layer[rec["layer"]] += rec["length_mm"]
+    tray_by_layer = tray_route_by_layer(scans, tray_max_segment_mm)
 
     try:
         from openpyxl import Workbook
@@ -952,6 +1234,15 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
         "电线展开=(路由长＋两端预留)×芯数；预留=每端" + str(cfg["reserve_per_end_m"]) + "m×回路数；损耗按 loss_rules.json",
         "桥架剔除单段>" + str(round(tray_max_segment_mm / 1000, 1)) + "m异常线；剔除量单独列出",
     ]
+    if plan_spec_labels_n:
+        notes.append(
+            "本批图纸平面只标规格、未标回路号（共识别 " + str(plan_spec_labels_n) +
+            " 处规格标注）：回路列记 `-`，按规格出量；分回路需另配配电系统图")
+    if propagated_mm > 0:
+        notes.append(
+            "其中 " + str(round(propagated_mm / 1000, 1)) +
+            "m 由相邻线段传播定规格（置信度=低），抽样核对时优先看这部分")
+    notes.append("标注层(DIM-*)、设备符号层(EQUIP-*)、图框/墙体/轴网不计入任何量，见「图层分档」")
     ws = wb.active
     ws.title = "口径"
     for n in notes:
@@ -1073,12 +1364,32 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
         ws.append([text, n, round(n * (1 + dev_loss), 1)])
     ws["A1"].font = bold
 
-    ws = wb.create_sheet("匹配情况")
-    ws.append(["图层", "总长m", "已匹配m", "未匹配m"])
+    ws = wb.create_sheet("图层分档")
+    ws.append(["图层", "总长m", "归属", "已出量m", "未出量m", "说明"])
+    tray_by_layer = tray_route_by_layer(scans)
     for layer, rec in sorted(by_layer.items(), key=lambda kv: -kv[1]["total"]):
-        if rec["total"] > 1000:
-            ws.append([layer, round(rec["total"] / 1000, 1), round(rec["matched"] / 1000, 1),
-                       round((rec["total"] - rec["matched"]) / 1000, 1)])
+        if rec["total"] <= 1000:
+            continue
+        role, note = layer_role(layer)
+        total_m = rec["total"] / 1000
+        if role == "电气回路":
+            done = rec["matched"] / 1000
+        elif role == "桥架":
+            done = tray_by_layer.get(layer, 0.0) / 1000
+        elif role == "水专业":
+            done = water_done_by_layer.get(layer, 0.0) / 1000
+        else:
+            done = 0.0
+        unmatched_m = max(total_m - done, 0.0)
+        if role == "电气回路" and rec["matched"] > 0 and unmatched_m > total_m * 0.30:
+            layer_specs = rec.get("specs") or {}
+            if layer_specs:
+                top_spec, top_mm = layer_specs.most_common(1)[0]
+                pct = top_mm / rec["matched"] * 100
+                note += (f"；未出量段无就近标注，主规格候选 {top_spec}"
+                         f"（占已匹配 {pct:.0f}%），需人工确认后按此分档")
+        ws.append([layer, round(total_m, 1), role, round(done, 1),
+                   round(unmatched_m, 1), note])
     ws.append([])
     ws.append(["歧义回路(多规格取多数)", "命中次数"])
     for token, n in ambiguous.most_common(20):
@@ -1096,7 +1407,7 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
 
     ws = wb.create_sheet("未匹配坐标簇")
     ws.append(["来源文件", "x区间m", "y区间m", "未匹配m", "对象数", "图层", "样本坐标"])
-    for rec in unmatched_clusters(scans, specs, cfg.get("match_radius_mm", 30000)):
+    for rec in cluster_unmatched(unmatched_rows):
         x0, x1 = rec["gx"] * 50_000 / 1000, (rec["gx"] + 1) * 50_000 / 1000
         y0, y1 = rec["gy"] * 50_000 / 1000, (rec["gy"] + 1) * 50_000 / 1000
         layers = "；".join(f"{layer} {mm / 1000:.1f}m"
@@ -1131,12 +1442,6 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
                 water_layer_sources[layer][scan["file"]] += rec["length_mm"]
     for layer, (mm, n) in sorted(merged.items(), key=lambda kv: -kv[1][0]):
         ws.append([layer, round(mm / 1000, 1), n])
-    water_records = water_segment_specs(
-        scans,
-        cfg.get("water_match_radius_mm", 15000),
-        cfg.get("water_fallback_radius_mm", 30000),
-    )
-    by_dn, dn_inferred, dn_unmatched = water_diameter_from_records(water_records)
     riser_rows = riser_identification(scans)
     n_floors = cfg.get("riser_floor_count") or max(
         (len(s.get("floor_labels", {})) for s in scans), default=1
@@ -1259,19 +1564,30 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
     ws["A1"].font = bold
 
     ws = wb.create_sheet("总量守恒")
-    ws.append(["对象", "源总长m", "分档合计m", "差值m", "状态"])
+    ws.append(["对象", "源总长m", "分档合计m", "差值m", "状态", "说明"])
     for layer, rec in by_layer.items():
-        if rec["total"] > 1000:
-            ws.append(conservation_row(f"电气-{layer}", rec["total"],
-                                       rec["matched"] + (rec["total"] - rec["matched"])))
+        if rec["total"] <= 1000:
+            continue
+        role, _note = layer_role(layer)
+        if role == "电气回路":
+            if rec["matched"] <= 0:
+                hint = "整层无规格标注（避雷/接地/应急类回路图上通常不标，照明类需人工确认）"
+            else:
+                hint = "未出量=就近无规格标注，见「图层分档」主规格候选"
+            ws.append(conservation_row(f"电气-{layer}", rec["total"], rec["matched"],
+                                       allow_partial=True) + [hint])
+        elif role == "桥架":
+            ws.append(conservation_row(f"桥架-{layer}", rec["total"],
+                                       tray_by_layer.get(layer, 0.0), allow_partial=True)
+                      + ["未出量=超过单段阈值的异常长线，已在「导管与桥架」单列"])
     for layer, source_mm in water_source_totals.items():
         classified = sum(mm for (pipe_layer, _dn), mm in by_dn.items() if pipe_layer == layer)
         classified += sum(mm for (pipe_layer, _dn), mm in dn_inferred.items() if pipe_layer == layer)
         classified += max(dn_unmatched.get(layer, 0.0), 0.0)
-        ws.append(conservation_row(f"水专业-{layer}", source_mm, classified))
+        ws.append(conservation_row(f"水专业-{layer}", source_mm, classified) + ["含未标注管段"])
     for layer, rec in trunk_route_layers.items():
         classified = sum(trunk_conf.get(layer, {}).values())
-        ws.append(conservation_row(f"干线-{layer}", rec[0], classified))
+        ws.append(conservation_row(f"干线-{layer}", rec[0], classified) + ["干线规格就近匹配"])
     ws["A1"].font = bold
 
     ws = wb.create_sheet("材料表提取")

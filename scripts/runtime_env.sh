@@ -14,6 +14,8 @@ set -uo pipefail
 _RT_SRC="${BASH_SOURCE[0]:-$0}"
 _RT_SCRIPTS="$(cd "$(dirname "${_RT_SRC}")" && pwd)"
 SKILL_DIR="$(cd "$_RT_SCRIPTS/.." && pwd)"
+# SkillHub 分发包（zip）会丢失可执行位：首次运行时幂等自愈，避免 permission denied
+find "$SKILL_DIR/scripts" -maxdepth 1 -type f \( -name '*.sh' -o -name '*.py' \) ! -perm -u+x -exec chmod +x {} + 2>/dev/null || true
 export SKILL_DIR
 
 # ---- 1) 解释器 ----
