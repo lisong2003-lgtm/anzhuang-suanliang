@@ -1,6 +1,6 @@
 {
   "name": "anzhuang-suanliang",
-  "version": "0.4.31",
+  "version": "0.4.34",
   "author": "lis",
   "license": "CC-BY-NC-SA-4.0",
   "entry": "SKILL.md",
@@ -38,7 +38,11 @@
     "references/dual_caliber_rules.json",
     "references/loss_rules.json",
     "references/standard_rules.json",
-    "README.en.md"
+    "README.en.md",
+    "docs/bus-integration.md",
+    "docs/integration.md",
+    "docs/runtime.md",
+    "docs/README.md"
   ],
   "tests": [
     "scripts/self_test.py"

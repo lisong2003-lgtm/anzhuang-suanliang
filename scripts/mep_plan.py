@@ -53,7 +53,7 @@ TRUNK_CABLE = re.compile(
 )
 CONDUIT_RE = re.compile(r"\b(PVC|PC|SC|MT|KBG|JDG|TC|CPVC)[- ]?(\d{2,3})\b", re.I)
 # 电线规格的数x芯写法：`3*10` `3x10` `3×10` `2*2.5+1*2.5` 都出现过，
-# 早期只认 x/×，实测华山这批图一律写 `*`（`WDZ-BYJ-3*10`），整个规格解析不下来。
+# 早期只认 x/×，实测样例这批图一律写 `*`（`WDZ-BYJ-3*10`），整个规格解析不下来。
 SIZE_TAIL_RE = re.compile(r"([0-9xX×*.+]+)$")
 SIZE_SPLIT_RE = re.compile(r"[xX×*]")
 # 芯数×截面：`3*10` `3x10` `3×2.5` `4*25+1*16`（取第一组，多芯组合另算）
@@ -70,7 +70,7 @@ ELECTRIC_ROUTE_RE = re.compile(r"(WIRE|LGT|BUSB|强电|弱电|电缆|照明线�
 PIPE_ROUTE_RE = re.compile(r"(PIPE|管网|综合管网|室外管网|雨水|污水|废水|给水|中水|消防|喷淋|燃气|热力|暖通|采暖|供热|SITE[_-]?PIPE|DIM_|EQUIP_|管线-|HEATER|HEATING)", re.I)
 TRAY_ROUTE_RE = re.compile(r"(CABLETRAY|电缆沟|电缆排管|强电排管|弱电排管|SITE[_-]?TRAY)", re.I)
 # 「不是管线」的图层：标注、图框、墙体、轴网、文字、楼梯。
-# 实测华山 J-5 电气图 `DIM-照明` 11329.9m、`DIM_SYMB` 1638.3m 全落在标注图层上，
+# 实测样例 J-5 电气图 `DIM-照明` 11329.9m、`DIM_SYMB` 1638.3m 全落在标注图层上，
 # 而 PIPE_ROUTE_RE 里的 `DIM_` / `ELEV` 又让 `DIM_SYMB`、`DIM-消防` 命中「水专业」，
 # 于是 1.6km 尺寸线被算成水管道。判据必须排在路由判据之前。
 NON_ROUTE_RE = re.compile(
@@ -741,7 +741,7 @@ def clean_spec(text: str) -> str:
 def looks_like_spec(s: str) -> bool:
     """判断一段文字是不是「只有规格、没有回路号」的回路标注。
 
-    实测华山这批电气图平面上一律写 `WDZ-BYJ-3*10-(CT)PVC32-FWC`，
+    实测样例这批电气图平面上一律写 `WDZ-BYJ-3*10-(CT)PVC32-FWC`，
     回路号（W1/WL2…）只出现在配电系统图上。早期实现要求「回路号:规格」，
     于是一整栋楼的电气管线全部匹配失败、电线电缆表 0 行。
     """
@@ -1165,7 +1165,7 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
         scans, specs, cfg.get("match_radius_mm", 30000),
         cfg.get("electrical_high_radius_mm", 10000)
     )
-    # 无线号图纸兜底：平面图只标「规格」不标「回路号」时（华山这批全是），
+    # 无线号图纸兜底：平面图只标「规格」不标「回路号」时（样例这批全是），
     # 走规格就近匹配。有回路号时不动，避免和系统图口径重复计数。
     plan_spec_labels_n = 0
     propagated_mm = 0.0
