@@ -2,11 +2,11 @@
 name: anzhuang-suanliang
 slug: anzhuang-suanliang
 displayName: 安装算量 · 概算底稿与物资计划双口径
-version: 0.4.34
+version: 0.4.35
 platforms: [macos, windows, linux]
 author: lis
 license: CC-BY-NC-SA-4.0
-description: "安装算量：从安装图纸/扫描索引出概算清单底稿和物资计划草稿——管线按规格分档、电线芯线与预留展开、电缆/桥架/给排水/喷淋/支吊架/设备数量。不替代翻样下料结算，不出金额。"
+description: "安装出概算与物资计划；不出金额、不替代结算。触发词：安装算量、桥架、喷淋。"
 i18n:
   en: README.en.md
   zh: README.md
