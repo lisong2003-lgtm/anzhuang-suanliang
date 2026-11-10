@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.38 · 2026-11-10 · S9 发布准备：版本收口
+
+- 版本 patch bump；同步套件最低版本。s9 发布准备，未改算量逻辑。
+
+## 0.4.37 · 2026-11-10 · mep_scan 只吃契约 + 入口闸门
+
+- **`mep_scan.py` 删除生产直读**：移除 `scan()`、`expand_block_geometry()` 与 `dev_scan/ezdwg` 生产 import，删除 `--dev-allow-direct`；只允许 `--contract` 消费 `cad-contract/v1`，DWG/DXF/DWT 退出 `23`。
+- **入口闸门 vendored**：新增 `scripts/entry_gate.py`，`mep_plan.py`/`mep_scan.py` 统一 `20/21/22/23/24`；`--check-deps` 缺 reader=`20`、缺 bus=`21`。
+- **`dev_scan.py` 改为停用桩**：不再 import `ezdxf/ezdwg`。
+- **文档修正**：`README.md` 删除 `mep_scan 平面图.dwg` 用法、`index.md` 删除「DWG → 扫描 JSON」，改为契约入口；SKILL.md 新增退出码表与固定提示。
+
+## 0.4.36 · 2026-11-09 · 接入 contract_guard 主门闸
+
+- **主入口闸门**：`mep_plan.py` 先 `guard_contract`；手工契约缺 `--allow-manual` exit 3，`mode=manual` 强制 `final_quantity=false`。`CAD_ALLOW_DIRECT` 环境变量闸替换为隐藏参数 `--dev-allow-direct`，输出强制 `DEV_DIRECT_PARSE`、`formal_ledger_eligible=false`。
+- **兼容 reader 契约**：`_doc_provenance()` 同时识别顶层与 `contract` 对象内的 `contract_version=cad-contract/v1`、`provenance`。
+- **新增**：`--check-deps`、`site_handoff.json`（`specialty=mep`）、`provenance`/`run_manifest` 输出。
+- **manifest 统一**：`requires.skills={cad-file-reader>=0.41.0, lis-skill-bus>=0.1.11}`，`entry_policy=contract-only`。
+
 ## 0.4.35 · 2026-11-09 · 常驻注入瘦身
 
 - **description 精简**：技能目录注入的 description 压到 ≤45 字，保留原有触发词与「不做什么」边界；SKILL.md 正文与算法口径未变。

@@ -28,66 +28,60 @@ except ImportError:
     resource = None
 
 
-def _ensure_base() -> Path:
-    """显式依赖底座：优先 CAD_SKILL_DIR，未装时自动下载安装 cad-file-reader，并自动补齐其 vendor。"""
-    import subprocess
-    candidates: list[Path] = []
-    override = os.environ.get("CAD_SKILL_DIR", "").strip()
-    if override:
-        candidates.append(Path(override).expanduser())
-    for parent in Path(__file__).resolve().parents:
-        candidates.append(parent / "cad-file-reader")
-    candidates.extend([
-        Path.home() / ".codex" / "skills" / "cad-file-reader",
-        Path.home() / ".claude" / "skills" / "cad-file-reader",
-    ])
-    for candidate in candidates:
-        if (candidate / "scripts").exists():
+def _base_dir():
+    """只探测、不下载：找不到 cad-file-reader 时返回 None，由入口给安装命令。"""
+    sandbox = os.environ.get("CODEX_SKILLS_ROOT", "").strip()
+    if sandbox:
+        cands = [Path(sandbox).expanduser() / "cad-file-reader"]
+    else:
+        override = os.environ.get("CAD_SKILL_DIR", "").strip()
+        cands = [Path(override).expanduser()] if override else []
+        cands += [
+            Path.home() / ".codex" / "skills" / "cad-file-reader",
+            Path.home() / ".claude" / "skills" / "cad-file-reader",
+        ]
+    for candidate in cands:
+        if (candidate / "scripts").is_dir():
             return candidate.resolve()
-
-    script = Path(__file__).resolve().parent / "ensure_base.sh"
-    if script.is_file():
-        env = None
-        if override:
-            env = {**os.environ, "CAD_SKILL_DIR": override}
-        res = subprocess.run(["bash", str(script)], capture_output=True,
-                             text=True, env=env)
-        out = res.stdout.strip()
-        if res.returncode == 0 and out:
-            return Path(out)
-        raise RuntimeError(
-            "未找到识图底座 cad-file-reader，且自动安装失败。"
-            "请联网重试，或设 CAD_SKILL_DIR 指向底座；离线可设 SKILL_NO_BASE=1 使用已有扫描结果降级。"
-        )
-    raise RuntimeError("未找到 cad-file-reader；请先安装该技能，或设置 CAD_SKILL_DIR 指向其目录。")
+    return None
 
 
-CAD_SKILL_DIR = _ensure_base()
-VENDOR = CAD_SKILL_DIR / "vendor"
-SCRIPTS = CAD_SKILL_DIR / "scripts"
+CAD_SKILL_DIR = _base_dir()
+VENDOR = (CAD_SKILL_DIR / "vendor") if CAD_SKILL_DIR else None
+SCRIPTS = (CAD_SKILL_DIR / "scripts") if CAD_SKILL_DIR else None
 
 
 def cad_reader_info() -> dict:
     """记录识图底座版本和测量候选兼容状态，便于扫描结果追溯。"""
     version = ""
-    try:
-        version = str(json.loads((CAD_SKILL_DIR / "manifest.json").read_text(encoding="utf-8")).get("version") or "")
-    except Exception:
-        pass
+    if CAD_SKILL_DIR:
+        try:
+            version = str(json.loads((CAD_SKILL_DIR / "manifest.json").read_text(encoding="utf-8")).get("version") or "")
+        except Exception:
+            pass
     parts = []
     for piece in version.split("."):
         try:
             parts.append(int(piece))
         except ValueError:
             parts.append(0)
-    compatible = len(parts) >= 2 and (parts[0], parts[1]) >= (0, 25)
+    compatible = len(parts) >= 2 and (parts[0], parts[1]) >= (0, 41)
     return {"version": version, "measurement_candidates_compatible": compatible}
-sys.path.insert(0, str(SCRIPTS))
-if VENDOR.is_dir():
-    sys.path.insert(0, str(VENDOR))
 
-sys.path.insert(0, str(SCRIPTS))
-from cad_common import start_mem_guard  # noqa: E402
+
+if SCRIPTS:
+    sys.path.insert(0, str(SCRIPTS))
+if VENDOR and VENDOR.is_dir():
+    sys.path.insert(0, str(VENDOR))
+try:
+    from cad_common import start_mem_guard  # noqa: E402
+except Exception:  # 底座缺失时内存闸降级，不影响契约消费
+    def start_mem_guard(**kwargs):
+        return {"ok": True, "skipped": "cad_common 不可用（仅内存闸）"}
+
+import contract_support as cs  # noqa: E402
+from contract_guard import GuardError, guard_contract  # noqa: E402
+import entry_gate as eg  # noqa: E402
 
 SEG_LAYER_RE = re.compile(r"(WIRE|PIPE|CABLETRAY|BUSB|LGT|E-WIRE|E-CABLETRAY)", re.I)
 OUTDOOR_LAYER_RE = re.compile(
@@ -301,225 +295,6 @@ def drawing_unit_info(doc: object, requested: str = "auto") -> dict:
     }
 
 
-# --------------------------------------------------------------------------
-# 块展开：把 INSERT/MINSERT（含 *U 匿名块）内的 LINE/LWPOLYLINE 摊到 modelspace
-# --------------------------------------------------------------------------
-# 只走 ezdwg.raw 的公共头 + 专用解码器，不整档建对象：全档 entity 十万级也能过。
-BLOCK_MAX_DEPTH = 8
-BLOCK_MAX_ENTITIES = 400000
-BLOCK_MAX_INSTANCES = 200      # 同一块最多摊 200 个实例（_ArchTick 之类的小符号动辄上千次）
-SCALE_MIN, SCALE_MAX = 1e-3, 1e4   # 累计缩放 sanity 闸，超出判为异常嵌套不摊
-COORD_ABSURD_MM = 1e9          # 摊平后坐标超过 1000km 判为异常，不计入
-_MODEL = "*Model_Space"
-
-
-def _tf_apply(tf, x: float, y: float):
-    tx, ty, sx, sy, rot = tf
-    c, s = math.cos(rot), math.sin(rot)
-    return tx + sx * (x * c - y * s), ty + sy * (x * s + y * c)
-
-
-def _tf_compose(parent, ins):
-    """父块变换 ∘ INSERT 变换；INSERT 记录为 (x, y, sx, sy, rot)。"""
-    px, py, psx, psy, prot = parent
-    ix, iy, isx, isy, irot = ins
-    ax, ay = _tf_apply(parent, ix, iy)
-    return (ax, ay, psx * isx, psy * isy, prot + irot)
-
-
-def expand_block_geometry(path: str, layer_by_handle: dict, default_layer: str,
-                          max_depth: int = BLOCK_MAX_DEPTH,
-                          max_entities: int = BLOCK_MAX_ENTITIES,
-                          max_instances: int = BLOCK_MAX_INSTANCES,
-                          domain: str = "auto") -> tuple:
-    """展开块参照内 LINE/LWPOLYLINE 到 modelspace 坐标。
-
-    返回 (items, stats)。items 里每条是
-    {"layer", "kind", "pts": [(x, y, z)...], "bulges", "closed"}，可直接复用 scan 的线段口径。
-    解析失败时 stats["ok"]=False，调用方按 degraded 处理，不伪装 pass。
-    """
-    from ezdwg import raw
-
-    stats = {"ok": True, "error": "", "blocks": 0, "inserts": 0, "block_geometry": 0,
-             "expanded": 0, "instances": 0, "depth_cut": 0, "entity_cut": 0, "instance_cut": 0,
-             "dup_cut": 0, "cycle_cut": 0, "scale_cut": 0, "coord_cut": 0, "child_unresolved": 0,
-             "route_geometry": 0, "layer_unresolved": 0, "top_blocks": []}
-
-    def fail(exc: Exception):
-        stats["ok"] = False
-        stats["error"] = f"{type(exc).__name__}: {exc}"
-        return [], stats
-
-    try:
-        placements = raw.decode_entity_placements(path)
-        header_names = raw.decode_block_header_names(path)
-        raw_lines = raw.decode_line_entities(path)
-        raw_polys = raw.decode_lwpolyline_entities(path)
-        pair = raw.decode_insert_minsert_entities(path)
-        raw_inserts = list(pair[0] if isinstance(pair, tuple) else pair)
-        if isinstance(pair, tuple) and len(pair) > 1:
-            raw_inserts += list(pair[1] or [])
-    except Exception as exc:
-        return fail(exc)
-
-    name_by_handle = {}
-    for item in header_names or []:
-        try:
-            name_by_handle.setdefault(int(item[0]), str(item[1]))
-        except (TypeError, ValueError, IndexError):
-            continue
-
-    own = {}
-    for item in placements or []:
-        try:
-            own[int(item[0])] = (int(item[1]), int(item[2] or 0))
-        except (TypeError, ValueError, IndexError):
-            continue
-
-    def block_key(handle: int):
-        mode, owner = own.get(handle, (-1, 0))
-        if mode == 2:
-            return _MODEL
-        if mode == 0 and owner:
-            return name_by_handle.get(owner)
-        return None
-
-    geom_by_block = defaultdict(list)
-    for item in raw_lines or []:
-        try:
-            h = int(item[0])
-            if not sane(item[1], item[2], item[4], item[5]):
-                continue
-            key = block_key(h)
-            if not key or key == _MODEL:
-                continue
-            geom_by_block[key].append(
-                ("LINE", h, [(float(item[1]), float(item[2])),
-                             (float(item[4]), float(item[5]))], [], False))
-        except (TypeError, ValueError, IndexError):
-            continue
-    for item in raw_polys or []:
-        try:
-            h = int(item[0])
-            pts = [(float(p[0]), float(p[1])) for p in (item[2] or []) if sane(p[0], p[1])]
-            if len(pts) < 2:
-                continue
-            key = block_key(h)
-            if not key or key == _MODEL:
-                continue
-            geom_by_block[key].append(
-                ("LWPOLYLINE", h, pts, list(item[3] or []), bool(int(item[1] or 0) & 1)))
-        except (TypeError, ValueError, IndexError):
-            continue
-    stats["block_geometry"] = sum(len(v) for v in geom_by_block.values())
-
-    # 只摊「可能计入路由」的图层：sample-site图 6.6 万条块内线几何里绝大多数是
-    # 墙体/户型/家具/石材底图，全摊必撞体量闸，且块内图层带 `外层块$0$` 前缀，
-    # 非路由噪声比 modelspace 更多。先解图层再过滤，建筑底图直接不进展开结果。
-    all_handles = [rec[1] for recs in geom_by_block.values() for rec in recs]
-    layer_of = {}
-    for start in range(0, len(all_handles), 20000):
-        chunk = all_handles[start:start + 20000]
-        try:
-            for h, lh in raw.decode_object_entity_layer_handles(path, chunk) or []:
-                layer_of[int(h)] = lh
-        except Exception:
-            stats["layer_unresolved"] += len(chunk)
-
-    def _layer_of(h: int) -> str:
-        lh = layer_of.get(h)
-        if lh in (None, 0):
-            stats["layer_unresolved"] += 1
-            return default_layer
-        return layer_by_handle.get(lh, f"handle:{lh}")
-
-    routed = defaultdict(list)
-    for key, recs in geom_by_block.items():
-        for kind, h, pts, bulges, closed in recs:
-            layer = _layer_of(h)
-            if route_layer(layer, domain):
-                routed[key].append((kind, layer, pts, bulges, closed))
-    stats["route_geometry"] = sum(len(v) for v in routed.values())
-    geom_by_block = routed
-
-    children = defaultdict(list)
-    for rec in raw_inserts or []:
-        try:
-            if len(rec) < 9:
-                continue
-            name = str(rec[8] or "").strip()
-            parent = block_key(int(rec[0]))
-            if not name or not parent:
-                continue
-            itx = (float(rec[1]), float(rec[2]), float(rec[4]), float(rec[5]), float(rec[7]))
-            if not sane(*itx):
-                continue
-            children[parent].append((name, itx))
-        except (TypeError, ValueError, IndexError):
-            continue
-    stats["blocks"] = len(set(geom_by_block) | set(children))
-    stats["inserts"] = sum(len(v) for v in children.values())
-
-    # 从 modelspace 出发按「每个 INSERT 实例」摊平：同一块被引用多次要按各自变换各摊一次，
-    # 只摊一次会把第一次碰到的（可能放大百倍的）变换当成全部实例的坐标，长度直接失真。
-    # 防炸三闸：祖先链防环 / 每块实例数上限 / 累计缩放 sanity 闸，命中都计数如实上报。
-    items = []
-    inst_count = defaultdict(int)
-    emitted_by_block = defaultdict(int)
-    seen_inst = set()
-    stack = [(_MODEL, (0.0, 0.0, 1.0, 1.0, 0.0), 0, ())]
-    while stack:
-        key, tf, depth, chain = stack.pop()
-        # 同一块 + 同一变换 = 同一个实例（多路径可达），只摊一次；否则嵌套图会被指数级重复计入。
-        sig = (key, round(tf[0], 1), round(tf[1], 1), round(tf[2], 4), round(tf[3], 4), round(tf[4], 6))
-        if sig in seen_inst:
-            stats["dup_cut"] += 1
-            continue
-        seen_inst.add(sig)
-        for kind, layer, pts, bulges, closed in geom_by_block.get(key, []):
-            if len(items) >= max_entities:
-                stats["entity_cut"] += 1
-                break
-            x0, y0 = _tf_apply(tf, pts[0][0], pts[0][1])
-            xn, yn = _tf_apply(tf, pts[-1][0], pts[-1][1])
-            if not sane(x0, y0, xn, yn) or max(abs(x0), abs(y0), abs(xn), abs(yn)) > COORD_ABSURD_MM:
-                stats["coord_cut"] += 1
-                continue
-            moved = [(_tf_apply(tf, x, y)[0], _tf_apply(tf, x, y)[1], 0.0) for x, y in pts]
-            items.append({"kind": kind, "layer": layer, "pts": moved,
-                          "bulges": bulges, "closed": closed})
-            emitted_by_block[key] += 1
-        if len(items) >= max_entities:
-            break
-        if depth >= max_depth:
-            stats["depth_cut"] += 1
-            continue
-        for name, itx in children.get(key, []):
-            ctf = _tf_compose(tf, itx)
-            if not (SCALE_MIN <= abs(ctf[2]) <= SCALE_MAX and SCALE_MIN <= abs(ctf[3]) <= SCALE_MAX):
-                stats["scale_cut"] += 1
-                continue
-            # 只按块名精确匹配：曾用 `外层$0$内层` 拆首/末段做回退，结果
-            # `X$0$Xxx` 回退到 `X` 后把外层自己当子块，同一子树被重入几十万次。
-            ck = name
-            if ck in chain:
-                stats["cycle_cut"] += 1
-                continue
-            if ck not in geom_by_block and ck not in children:
-                stats["child_unresolved"] += 1
-                continue
-            if inst_count[ck] >= max_instances:
-                stats["instance_cut"] += 1
-                continue
-            inst_count[ck] += 1
-            stack.append((ck, ctf, depth + 1, chain + (key,)))
-
-    stats["expanded"] = len(items)
-    stats["instances"] = len(seen_inst)
-    stats["top_blocks"] = [[k, v] for k, v in sorted(emitted_by_block.items(), key=lambda kv: -kv[1])[:5]]
-    return items, stats
-
-
 def _contract_num(value, fallback):
     try:
         f = float(value)
@@ -623,15 +398,19 @@ def contract_unit_info(payload, requested="auto"):
     }
 
 
-def scan_contract(contract_path, max_text=40000, left_boundary_mm=None, domain="auto", unit="auto"):
+def scan_contract(contract_path, max_text=40000, left_boundary_mm=None, domain="auto", unit="auto",
+                  allow_manual=False):
     """识别契约消费模式：只读 cad-file-reader 产出的 MEP 契约 JSON，不直接打开 DWG。
 
     这是 lis-skill-bus 识图契约红线的算量入口：cad-file-reader 负责识图并产契约，
-    本函数只把契约候选转成与 scan() 同构的 mep-scan 输出（segments/pipe_segments/devices/texts）。
+    本函数只把契约候选转成完整 mep-scan 输出（segments/pipe_segments/devices/texts）。
     契约里的识图/测量候选一律 final_quantity=false，本函数不新增工程量。
     """
     guard = start_mem_guard(name="mep_scan契约闸")
     path = Path(contract_path)
+    # 识图契约准入闸：provenance=reader/bus 才是正式；manual 必须显式 allow_manual。
+    # 统一映射 contract_guard 1-5 → 入口码 22/24。
+    cguard = eg.require_contract(path, allow_manual=bool(allow_manual))
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -643,6 +422,12 @@ def scan_contract(contract_path, max_text=40000, left_boundary_mm=None, domain="
                 "path": str(path), "schema": "anzhuang-suanliang/mep-scan-contract/v0",
                 "peak_rss_mb": peak_rss_mb(), "mem_guard": guard}
     contract = payload.get("contract") if isinstance(payload.get("contract"), dict) else {}
+    # bus 拉回的是 cad-contract/v1 外壳：{"contract": v0payload, "contract": v0payload["contract"]}；
+    # 候选列表在第二层 contract 里，这里统一解包，兼容手工契约与外壳两种形态。
+    inner = contract.get("contract") if isinstance(contract.get("contract"), dict) else None
+    # 只有内层真的带候选时才下沉；空 candidates 的元数据层会吞掉 text_records/route_segments。
+    if isinstance(inner, dict) and isinstance(inner.get("candidates"), list) and inner.get("candidates"):
+        contract = inner
     contract_schema = str(contract.get("schema") or payload.get("schema") or "unknown")
     source_file = str(contract.get("source") or payload.get("source_file") or path.name) or path.name
     unit_info = contract_unit_info(payload, unit)
@@ -652,14 +437,22 @@ def scan_contract(contract_path, max_text=40000, left_boundary_mm=None, domain="
     def rows(*sections):
         out = []
         for section in sections:
-            raw = payload.get(section)
+            # bus 外壳下候选段落在解包后的 contract 内；直传契约仍回退到根节点，两种形态都兼容。
+            raw = contract.get(section)
+            if not isinstance(raw, list):
+                raw = payload.get(section)
             if isinstance(raw, list):
                 out.extend([r for r in raw if isinstance(r, dict)])
         return out
 
     route_rows = rows("route_segments", "risers", "vertical_routes", "circuits")
     if not route_rows:
-        route_rows = [c for c in (contract.get("candidates") or []) if isinstance(c, dict) and c.get("kind") == "route"]
+        # 契约里几何候选的 kind 是 line（bbox=线段包框），文本/系统候选才是 route；
+        # 两者都收，后面按图层过滤并用 bbox 长度兜底，避免“有几何却识别成 0 段”。
+        route_rows = [
+            c for c in (contract.get("candidates") or [])
+            if isinstance(c, dict) and c.get("kind") in ("route", "line")
+        ]
     equip_rows = rows("equipment", "lightning", "fire_protection", "weak_current", "intelligent_building")
     if not equip_rows:
         equip_rows = [c for c in (contract.get("candidates") or []) if isinstance(c, dict) and c.get("kind") == "device"]
@@ -678,6 +471,8 @@ def scan_contract(contract_path, max_text=40000, left_boundary_mm=None, domain="
     contract_counts["route_rows"] = len(route_rows)
     contract_counts["equipment_rows"] = len(equip_rows)
     contract_counts["text_rows"] = len(text_rows)
+    contract_counts["outlier_segments"] = 0
+    outlier_rows = []
 
     for row in route_rows:
         layer = str(row.get("layer") or "")
@@ -693,6 +488,14 @@ def scan_contract(contract_path, max_text=40000, left_boundary_mm=None, domain="
         fallback_len = math.hypot(x2 - x1, y2 - y1)
         seg_len = _contract_num(row.get("length_drawing_units", fallback_len), fallback_len) * length_scale
         if seg_len <= 0:
+            continue
+        # 单段超长多为块基点/坐标偏移造成的坏几何（实测出现 66 km 单段）；
+        # 不静默剔除，计入 outlier_segments 交给复核。
+        cap_mm = 200000.0 if domain == "indoor" else 2000000.0
+        if seg_len > cap_mm:
+            contract_counts["outlier_segments"] += 1
+            outlier_rows.append({"layer": layer, "length_mm": round(seg_len, 1),
+                                 "geometry": [round(v, 1) for v in (x1, y1, x2, y2)]})
             continue
         wire[layer]["entities"] += 1
         wire[layer]["length_mm"] += seg_len
@@ -762,6 +565,7 @@ def scan_contract(contract_path, max_text=40000, left_boundary_mm=None, domain="
         "path": str(path),
         "entity_counts": {},
         "contract_counts": dict(sorted(contract_counts.items(), key=lambda kv: -kv[1])),
+        "outlier_segments": outlier_rows,
         "wire_layers": {k: {"entities": v["entities"], "length_mm": round(v["length_mm"], 1)}
                         for k, v in sorted(wire.items(), key=lambda kv: -kv[1]["length_mm"])},
         "segments": segments,
@@ -785,199 +589,45 @@ def scan_contract(contract_path, max_text=40000, left_boundary_mm=None, domain="
         "cad_reader": cad_reader_info(),
         "peak_rss_mb": peak_rss_mb(),
         "mem_guard": guard,
+        **cs.provenance_fields(cguard),
+        "contract_warnings": list(cguard.get("warnings") or []),
+        "run_manifest": cs.run_manifest("anzhuang-suanliang", _skill_version(), cguard,
+                                        argv=_argv_snapshot()),
     }
 
 
-def scan(path: str, max_text: int = 40000, left_boundary_mm: float | None = None, domain: str = "auto", unit: str = "auto") -> dict:
-    # 下游 skill 直接 import 底座 API，不经过 read_cad/convert_dwg 入口，内存看门狗不在环里，
-    # 必须在整档解析前自己挂一遍：大图（20MB+）解析吃内存，超限要主动终止而不是拖死整机。
-    # 为让契约消费模式不加载 DWG 解析库，ezdwg/read_cad 改为本函数内惰性导入。
-    import ezdwg  # noqa: E402
-    import read_cad  # noqa: E402
-    guard = start_mem_guard(name="mep_scan内存闸")
-    doc = ezdwg.read(path)
-    _layers, layer_by_handle = read_cad._raw_dwg_layers(path)
-    default_layer = next(iter(layer_by_handle.values()), "0") if layer_by_handle else "0"
-    unit_info = drawing_unit_info(doc, unit)
-    coord_scale = float(unit_info["coord_scale_to_mm"])
-    length_scale = float(unit_info["length_scale_to_mm"])
+def _skill_version() -> str:
+    try:
+        return str(json.loads((Path(__file__).resolve().parents[1] / "manifest.json")
+                              .read_text(encoding="utf-8")).get("version") or "")
+    except Exception:
+        return ""
 
-    wire = defaultdict(lambda: {"entities": 0, "length_mm": 0.0})
-    segments = []
-    pipe_segments = []
-    inserts = defaultdict(int)
-    attrib_groups = defaultdict(lambda: defaultdict(int))
-    devices = []
-    texts = []
-    floor_labels = {}
-    entity_counts = defaultdict(int)
-    # 块参照（含 *U 匿名块）内线路摊平到 modelspace；失败按 degraded 记录，不伪装 pass。
-    block_items, block_stats = expand_block_geometry(path, layer_by_handle, default_layer)
-    titleblock_attribs = 0
 
-    def _consume_geometry(kind: str, layer: str, pts: list, bulges: list, closed: bool) -> None:
-        """LINE/LWPOLYLINE 统一入账（图层长度 + 路由段 + 管段）；顶层实体与块展开共用同一口径。"""
-        if len(pts) < 2:
-            return
-        length = poly_len(pts, bulges if kind == "LWPOLYLINE" else [], closed)
-        if length <= 0:
-            return
-        length *= length_scale
-        wire[layer]["entities"] += 1
-        wire[layer]["length_mm"] += length
-        if not route_layer(layer, domain):
-            return
-        for seg_i, (a, b) in enumerate(zip(pts, pts[1:])):
-            seg_len = math.hypot(b[0] - a[0], b[1] - a[1]) * length_scale
-            if seg_len <= 0:
-                continue
-            # 端点一并输出：回路标注匹配要算「点到线段」距离。
-            segments.append(
-                [layer, round(seg_len, 1),
-                 round((a[0] + b[0]) / 2 * coord_scale, 1),
-                 round((a[1] + b[1]) / 2 * coord_scale, 1),
-                 round(a[0] * coord_scale, 1), round(a[1] * coord_scale, 1),
-                 round(b[0] * coord_scale, 1), round(b[1] * coord_scale, 1)]
-            )
-            if pipe_layer(layer):
-                bulge = 0.0
-                if kind == "LWPOLYLINE" and bulges:
-                    try:
-                        bulge = float(bulges[seg_i] or 0)
-                    except (TypeError, ValueError, IndexError):
-                        pass
-                pipe_len = poly_len([a, b], [bulge], False) * length_scale
-                pipe_segments.append(
-                    [layer, round(pipe_len, 1),
-                     round(a[0] * coord_scale, 1), round(a[1] * coord_scale, 1), round(a[2] * length_scale, 1),
-                     round(b[0] * coord_scale, 1), round(b[1] * coord_scale, 1), round(b[2] * length_scale, 1)]
-                )
-
-    for e in doc.modelspace().iter_entities():
-        dxftype = str(getattr(e, "dxftype", ""))
-        entity_counts[dxftype] += 1
-        dxf = getattr(e, "dxf", {}) or {}
-        h = dxf.get("layer_handle")
-        layer = default_layer if h in (None, 0) else layer_by_handle.get(h, f"handle:{h}")
-
-        if dxftype in ("LINE", "LWPOLYLINE"):
-            pts = []
-            if dxftype == "LINE":
-                s, t = dxf.get("start") or (), dxf.get("end") or ()
-                if len(s) >= 2 and len(t) >= 2 and sane(s[0], s[1], t[0], t[1]):
-                    z1 = float(s[2]) if len(s) > 2 and sane(s[2]) else 0.0
-                    z2 = float(t[2]) if len(t) > 2 and sane(t[2]) else 0.0
-                    pts = [(float(s[0]), float(s[1]), z1), (float(t[0]), float(t[1]), z2)]
-            else:
-                elevation = float(dxf.get("elevation") or 0) if sane(dxf.get("elevation") or 0) else 0.0
-                pts = [(p[0], p[1], elevation)
-                       for p in (dxf.get("points") or []) if sane(p[0], p[1])]
-            if len(pts) >= 2:
-                _consume_geometry(dxftype, layer, pts,
-                                  dxf.get("bulges") or [] if dxftype == "LWPOLYLINE" else [],
-                                  bool(dxf.get("closed")))
-
-        elif dxftype in ("INSERT", "MINSERT"):
-            name = str(dxf.get("name") or "")
-            if name:
-                inserts[name] += 1
-
-        elif dxftype == "ATTRIB":
-            text = decode_cad_text(str(dxf.get("text") or "")).strip()
-            tag = str(dxf.get("tag") or "").strip()
-            pos = dxf.get("insert") or ()
-            if is_titleblock_attrib(tag, text):
-                titleblock_attribs += 1
-                continue
-            if text:
-                attrib_groups[tag][text] += 1
-                if len(pos) >= 2 and sane(pos[0], pos[1]):
-                    devices.append({"text": text, "tag": tag,
-                                    "x": float(pos[0]) * coord_scale, "y": float(pos[1]) * coord_scale})
-
-        elif dxftype in ("TEXT", "MTEXT") and len(texts) < max_text:
-            text = decode_cad_text(str(dxf.get("text") or dxf.get("raw_text") or "")).strip()
-            pos = dxf.get("insert") or ()
-            if text and len(pos) >= 2 and sane(pos[0], pos[1]):
-                texts.append({"layer": layer, "text": text,
-                              "x": float(pos[0]) * coord_scale, "y": float(pos[1]) * coord_scale,
-                              "h": float(dxf.get("height") or 0) * length_scale})
-                if FLOOR_RE.match(text) and float(dxf.get("height") or 0) >= 10000:
-                    floor_labels.setdefault(text, [float(pos[0]) * coord_scale, float(pos[1]) * coord_scale])
-
-    for item in block_items:
-        entity_counts[f"BLOCK_{item['kind']}"] += 1
-        _consume_geometry(item["kind"], item["layer"], item["pts"], item["bulges"], item["closed"])
-
-    zones = sorted(floor_labels, key=lambda k: floor_labels[k][0])
-    xs = [floor_labels[z][0] for z in zones]
-    bounds = [0.0] + [(a + b) / 2 for a, b in zip(xs, xs[1:])] + [float("inf")]
-
-    def zone_of(x: float) -> str:
-        if left_boundary_mm is not None and x < left_boundary_mm:
-            return "左图区"
-        for i, z in enumerate(zones):
-            if bounds[i] <= x < bounds[i + 1]:
-                return z
-        return zones[0] if zones else "全图"
-
-    dev_by_zone = defaultdict(lambda: defaultdict(int))
-    seg_by_zone = defaultdict(lambda: defaultdict(float))
-    for seg in segments:
-        seg_by_zone[zone_of(seg[2])][seg[0]] += seg[1]
-    for rec in devices:
-        dev_by_zone[zone_of(rec["x"])][rec["text"]] += 1
-
-    return {
-        "ok": True,
-        "file": Path(path).name,
-        "path": path,
-        "entity_counts": dict(sorted(entity_counts.items(), key=lambda kv: -kv[1])),
-        "wire_layers": {k: {"entities": v["entities"], "length_mm": round(v["length_mm"], 1)}
-                        for k, v in sorted(wire.items(), key=lambda kv: -kv[1]["length_mm"])},
-        "segments": segments,
-        "pipe_segments": pipe_segments,
-        "inserts": dict(sorted(inserts.items(), key=lambda kv: -kv[1])),
-        "attrib_groups": {tag: dict(sorted(t.items(), key=lambda kv: -kv[1]))
-                          for tag, t in attrib_groups.items()},
-        "devices": devices,
-        "texts": texts,
-        "floor_labels": floor_labels,
-        "wire_by_zone": {z: {k: round(v / 1000, 1) for k, v in sorted(ls.items(), key=lambda kv: -kv[1])}
-                         for z, ls in seg_by_zone.items()},
-        "devices_by_zone": {z: dict(sorted(d.items(), key=lambda kv: -kv[1]))
-                            for z, d in dev_by_zone.items()},
-        "domain": domain,
-        "drawing_unit": unit_info,
-        "geometry_scope": "modelspace_and_block_expanded",
-        "block_reference_count": sum(inserts.values()),
-        "block_expansion": block_stats,
-        "titleblock_attribs_filtered": titleblock_attribs,
-        "block_geometry_review": (
-            "已把 INSERT/MINSERT（含 *U 匿名块）内 LINE/LWPOLYLINE 递归摊平到 modelspace 计入本结果；"
-            "仍不含嵌套外部参照（XREF）、块内 ARC/SPLINE/HATCH 及属性块内的非线几何，"
-            "管壁/保温等需另按说明核对"
-            if block_stats.get("expanded") else
-            ("未取到可展开的块内线几何" if not block_stats.get("ok") else
-             "本图块参照内无可展开的 LINE/LWPOLYLINE")
-        ),
-        "cad_reader": cad_reader_info(),
-        "peak_rss_mb": peak_rss_mb(),
-        "mem_guard": guard,
-    }
+def _argv_snapshot():
+    import sys as _sys
+    return list(_sys.argv[1:])
 
 
 def main() -> None:
     raw = sys.argv[1:]
     lang = i18n.argv_lang(raw)
     desc = (__doc__ if lang == "zh" else
-            "Scan MEP DWG drawings or consume cad-file-reader contract: pipe segments, devices, text, blocks, attributes, floor anchors.")
+            "Consume a cad-file-reader cad-contract/v1 JSON: pipe segments, devices, text, attributes, floor anchors.")
     ap = argparse.ArgumentParser(description=desc)
     i18n.add_lang_arg(ap, default=lang)
-    ap.add_argument("path", help="input DWG drawing or cad-file-reader contract JSON (with --contract)" if lang == "en" else "输入 DWG 图纸或 cad-file-reader 契约 JSON（配合 --contract）")
+    ap.add_argument("path", nargs="?",
+                    help="输入 cad-file-reader 契约 JSON（配 --contract）；直读 DWG 已停用" if lang == "en"
+                    else "输入 cad-file-reader 契约 JSON（配合 --contract）；直读 DWG 已停用")
     ap.add_argument("--contract", action="store_true",
-                    help="consume cad-file-reader contract JSON, do not open DWG" if lang == "en" else "消费 cad-file-reader 契约 JSON，不直接打开 DWG（算量识图红线入口）")
-    ap.add_argument("--out", required=True, help="output JSON path" if lang == "en" else "输出 JSON 路径")
+                    help="consume cad-file-reader contract JSON, do not open DWG" if lang == "en" else "消费 cad-file-reader 契约 JSON，不直接打开 DWG（正式入口）")
+    ap.add_argument("--allow-manual", action="store_true",
+                    help="allow manual contract; result is forced final_quantity=false" if lang == "en"
+                    else "允许消费手工契约；结果强制 final_quantity=false、formal_ledger_eligible=false")
+    ap.add_argument("--check-deps", action="store_true",
+                    help="only check cad-file-reader / lis-skill-bus / Python; exit 20/21 when missing" if lang == "en"
+                    else "只检查 cad-file-reader / lis-skill-bus / Python 前置；缺 reader=20、缺 bus=21，不读图纸")
+    ap.add_argument("--out", help="output JSON path" if lang == "en" else "输出 JSON 路径")
     ap.add_argument("--max-text", type=int, default=40000,
                     help="max text records to keep (default 40000)" if lang == "en" else "最大文本数")
     ap.add_argument("--left-boundary-mm", type=float, default=None,
@@ -987,17 +637,42 @@ def main() -> None:
     ap.add_argument("--unit", choices=("auto", "mm", "m"), default="auto",
                     help="drawing coordinate unit; use --unit mm/m when INSUNITS=0" if lang == "en" else "图面坐标单位；INSUNITS=0 时可用 --unit mm/m 显式确认")
     args = ap.parse_args(raw)
-    if args.contract:
-        result = scan_contract(args.path, args.max_text, args.left_boundary_mm, args.domain, args.unit)
-    else:
-        # 识图契约红线（硬规则）：算量 skill 不得单独解图。
-        # 用户要算量必须先经 cad-file-reader 产出契约；本入口只接受显式逃生 CAD_ALLOW_DIRECT=1（仅回归/调试用）。
-        if os.environ.get("CAD_ALLOW_DIRECT") != "1":
-            sys.stderr.write(
-                "[mep_scan] 已按 lis-skill-bus 识图契约红线拒绝：算量 skill 不单独识别 DWG。\n"
-                "请先用 cad-file-reader 产出契约（cad_scan/cad_contract），再把契约交给算量流程，或临时设 CAD_ALLOW_DIRECT=1 仅供回归调试。\n")
-            sys.exit(2)
-        result = scan(args.path, args.max_text, args.left_boundary_mm, args.domain, args.unit)
+
+    if args.check_deps:
+        status = cs.check_deps()
+        print(cs.format_deps(status))
+        sys.exit(eg.dependency_exit_code())
+
+    # 入口闸门：直接传图纸一律 23；缺 reader=20、缺 bus=21，不自行解图。
+    try:
+        eg.reject_drawing_input(args.path)
+        eg.require_reader()
+        eg.require_bus()
+    except eg.GateError as exc:
+        sys.exit(eg.print_gate_error(exc))
+
+    if not args.path or not args.out:
+        sys.stderr.write("[mep_scan] 需要输入契约 JSON 与 --out。\n"
+                         "正式链路：cad-file-reader 产出 cad-contract/v1 → 本入口 --contract 消费。\n")
+        sys.exit(2)
+
+    if not args.contract:
+        sys.stderr.write(
+            "[mep_scan] 本入口只消费 cad-file-reader 的 cad-contract/v1 契约，不再直接打开 DWG。\n"
+            "请先用 cad-file-reader 生成契约，再用 --contract 指定契约 JSON；直接传图纸返回 23。\n")
+        sys.exit(2)
+
+    try:
+        result = scan_contract(args.path, args.max_text, args.left_boundary_mm,
+                               args.domain, args.unit, allow_manual=args.allow_manual)
+    except eg.GateError as exc:
+        sys.exit(eg.print_gate_error(exc))
+    except GuardError as exc:
+        sys.stderr.write("[GuardError %d] %s\n" % (exc.code, exc.message))
+        if exc.hint:
+            sys.stderr.write("修复: %s\n" % exc.hint)
+        sys.exit(exc.code)
+
     out_doc = {
         "status": "ok" if result.get("ok") else "error",
         "message": ("contract scan completed" if lang == "en" else "契约识别完成") if result.get("ok") else str(result.get("error") or "识别失败"),

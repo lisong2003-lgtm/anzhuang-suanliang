@@ -22,6 +22,10 @@ from collections import Counter, defaultdict
 import i18n
 from pathlib import Path
 
+import contract_support as cs
+import entry_gate as eg
+from contract_guard import GuardError
+
 # openpyxl 只在写 xlsx 时需要：延迟到出表函数内导入，避免"没装 openpyxl 连 --help 都跑不了"
 
 CIRCUIT_LABEL = re.compile(r"(?::|^)\s*(W[A-Z]{1,3}\d*[A-Za-z]?)\s*$")
@@ -1156,7 +1160,7 @@ def water_blocks(scans: list[dict]) -> list[tuple[str, str, int]]:
 
 def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
           trunk_scans: list[dict] | None = None, cad_measurement: dict | None = None,
-          mep_geometry: dict | None = None) -> Path:
+          mep_geometry: dict | None = None, stats: dict | None = None) -> Path:
     specs, _ctype = spec_tables(sys_scans)
     boxed_specs = boxed_system_specs(
         sys_scans, cfg.get("system_box_spec_radius_mm", 250_000)
@@ -1650,12 +1654,156 @@ def build(scans: list[dict], sys_scans: list[dict], cfg: dict, out_prefix: str,
 
     out = Path(out_prefix + ".xlsx")
     wb.save(out)
+    if stats is not None:
+        stats["members"] = _plan_members(by_spec, trunk_matched, water_totals, devices)
     return out
+
+
+
+# ---------------------------------------------------------------- 来源闸门
+FORMAL_PLAN_PROVENANCE = {"reader", "bus"}
+
+
+def _doc_provenance(doc: dict) -> str:
+    """取 scan JSON 的来源；兼容裸 scan、scan+contract、以及 reader 契约块。"""
+    if not isinstance(doc, dict):
+        return "manual"
+    prov = str(doc.get("provenance") or "").strip().lower()
+    if prov:
+        return prov
+    contract = doc.get("contract") if isinstance(doc.get("contract"), dict) else {}
+    prov = str(contract.get("provenance") or "").strip().lower()
+    if prov:
+        return prov
+    # reader 产出的 cad-contract/v1 一定有 contract_id；有它才算 reader 产物。
+    # reader 详情 JSON 的版本写在 contract.contract_version，bus 包装件才写在顶层 schema。
+    version = str(contract.get("contract_version") or contract.get("schema") or "").strip()
+    if version == "cad-contract/v1" and str(contract.get("contract_id") or "").strip():
+        return "reader"
+    if str(doc.get("schema") or "") == "cad-contract/v1" and str(doc.get("contract_id") or "").strip():
+        return "reader"
+    return "manual"
+
+
+def _doc_contract_id(doc: dict) -> str:
+    if not isinstance(doc, dict):
+        return ""
+    return str(doc.get("contract_id") or (doc.get("contract") or {}).get("contract_id") or "").strip()
+
+
+def guard_plan_sources(docs: list[tuple[str, dict]], *, allow_manual: bool) -> dict:
+    """按输入 scan 的 provenance 判定来源；只有 reader/bus 才免手工开关。
+
+    安装物资计划本身是概算口径，final_quantity 恒为 false；本闸门只解决
+    “输入是不是识图链路产物”，不把物资计划冒充正式台账量。
+    """
+    if not docs:
+        raise GuardError(5, "没有可用的扫描 JSON。", hint="先用 cad-file-reader 出契约，再 mep_scan --contract 生成 scan JSON。")
+    provs, ids, src_shas, reader_versions, warnings = [], [], [], [], []
+    for label, doc in docs:
+        prov = _doc_provenance(doc)
+        provs.append(prov)
+        cid = _doc_contract_id(doc)
+        if cid:
+            ids.append(cid)
+        sha = str(doc.get("source_sha256") or (doc.get("contract") or {}).get("source_sha256") or "").strip()
+        if sha:
+            src_shas.append(sha)
+        rv = str(doc.get("reader_version") or (doc.get("contract") or {}).get("reader_version") or "").strip()
+        if rv:
+            reader_versions.append(rv)
+        if prov not in FORMAL_PLAN_PROVENANCE:
+            warnings.append("%s 的 provenance=%s，按手工来源处理。" % (label, prov or "缺失"))
+    formal = all(p in FORMAL_PLAN_PROVENANCE for p in provs)
+    if not formal and not allow_manual:
+        raise GuardError(
+            3,
+            "扫描输入 provenance=%s，不是 reader/bus，拒入正式链路。" % "、".join(sorted(set(provs))),
+            hint="确认是手工/旧扫描结果后加 --allow-manual；结果强制 final_quantity=false。",
+        )
+    return {
+        "mode": "formal" if formal else "manual",
+        "provenance": "reader" if formal else "manual",
+        "contract_id": ",".join(dict.fromkeys(ids)),
+        "source_sha256": ",".join(dict.fromkeys(src_shas)),
+        "contract_sha256": "",
+        "reader_version": reader_versions[0] if reader_versions else "",
+        # 物资计划不是正式台账量：两种来源都锁 false。
+        "formal_ledger_eligible": False,
+        "warnings": warnings,
+    }
+
+
+def _plan_members(by_spec: dict, trunk_matched: dict, water_totals: dict,
+                  devices: list) -> list:
+    """把计划里的管/缆/线/水/设备折成交接成员；无重量、无坐标如实留空。"""
+    members = []
+    n = 0
+
+    def add(kind, name, qty, unit, note=""):
+        nonlocal n
+        n += 1
+        members.append(cs.handoff_member(
+            "MEP-%04d" % n,
+            weight_t=None, length_m=(round(float(qty), 2) if unit == "m" else None),
+            section=str(name or ""), grade="", zone="",
+            weight_basis="unknown", coord_status="missing",
+            kind=kind, quantity=round(float(qty), 2), unit=unit, note=note))
+
+    for spec, rec in sorted(by_spec.items(), key=lambda kv: -kv[1]["length_mm"]):
+        info = parse_spec(spec)
+        length_m = rec["length_mm"] / 1000.0
+        if info.get("conduit"):
+            add("导管", spec, length_m, "m", "回路就近匹配")
+        elif info.get("tray"):
+            add("桥架", spec, length_m, "m", "回路就近匹配")
+        elif info.get("is_cable"):
+            add("电缆", spec, length_m, "m", "回路就近匹配")
+        else:
+            add("电线", spec, length_m * info.get("cores", 1), "m", "回路就近匹配×芯数")
+    for spec, route_mm in sorted(trunk_matched.items(), key=lambda kv: -kv[1]):
+        add("干线电缆", spec, float(route_mm) / 1000.0, "m", "干线规格就近匹配")
+    for (layer, dn), mm in sorted(water_totals.items(), key=lambda kv: -kv[1]):
+        add("水专业管道", "%s %s" % (layer, dn), float(mm) / 1000.0, "m", "管径就近匹配")
+    for text, count, _sources in devices:
+        add("设备", text, float(count), "个", "ATTRIB 计数")
+    return members
+
+
+def write_plan_sidecars(out_prefix: str, guard: dict, stats: dict, argv: list) -> dict:
+    """写 provenance / run_manifest / site_handoff；返回随输出打印的摘要。"""
+    out = Path(out_prefix + ".xlsx")
+    out_dir = out.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    prov = cs.provenance_fields(guard)
+    prov["mode"] = guard.get("mode") or "manual"
+    prov["boundary"] = ("安装物资计划=概算口径；只做回路/管径匹配与损耗折算，"
+                        "final_quantity=false，不替代结算清单。")
+    prov["inputs"] = stats.get("inputs") or []
+    cs.write_json(Path(out_prefix + ".provenance.json"), prov)
+    manifest = cs.run_manifest("anzhuang-suanliang", _skill_version(), guard, argv=argv)
+    cs.write_json(Path(out_prefix + ".run.json"), manifest)
+    members = stats.get("members") or []
+    cs.write_handoff(out_dir, str(stats.get("project") or ""), "mep", guard, members)
+    return {"provenance": prov, "run_manifest": manifest, "members": len(members)}
+
+
+def _skill_version() -> str:
+    try:
+        return str(json.loads((Path(__file__).resolve().parents[1] / "manifest.json")
+                              .read_text(encoding="utf-8")).get("version") or "")
+    except Exception:
+        return ""
 
 
 def main() -> None:
     raw = sys.argv[1:]
     lang = i18n.argv_lang(raw)
+    # --check-deps 必须在 required 参数之前拦下，否则永远提示缺 --scan。
+    if "--check-deps" in raw:
+        status = cs.check_deps()
+        print(cs.format_deps(status))
+        raise SystemExit(eg.dependency_exit_code())
     desc = (__doc__ if lang == "zh" else
             "Generate installation material plan from scan JSON: circuit-to-spec matching, loss-to-order rounding.")
     ap = argparse.ArgumentParser(description=desc)
@@ -1669,7 +1817,23 @@ def main() -> None:
                     help="loss-rule JSON config" if lang == "en" else "损耗规则 JSON 配置")
     ap.add_argument("--out-prefix", required=True,
                     help="output file prefix" if lang == "en" else "输出文件前缀")
+    ap.add_argument("--allow-manual", action="store_true",
+                    help="allow scan JSON without reader provenance; result is forced final_quantity=false" if lang == "en"
+                    else "允许消费无 reader 溯源的 scan JSON（手工/旧结果）；结果强制 final_quantity=false")
+    ap.add_argument("--check-deps", action="store_true",
+                    help="only check cad-file-reader / lis-skill-bus / Python" if lang == "en"
+                    else "只检查 cad-file-reader / lis-skill-bus / Python 前置")
+    ap.add_argument("--project", default="",
+                    help="project id written into site_handoff.json" if lang == "en" else "写入 site_handoff.json 的项目标识")
     args = ap.parse_args(raw)
+    # 入口闸门：缺 cad-file-reader / lis-skill-bus 先停；任何图纸输入一律拒收。
+    try:
+        eg.require_reader()
+        eg.require_bus()
+        eg.reject_drawing_input(args.scan, args.system, args.trunk_scan,
+                                args.cad_measurement, args.mep_geometry)
+    except eg.GateError as exc:
+        raise SystemExit(eg.print_gate_error(exc)) from None
     scans = [load(p) for p in args.scan]
     sys_scans = [load(p) for p in args.system] if args.system else []
     trunk_scans = [load(p) for p in args.trunk_scan] if args.trunk_scan else []
@@ -1679,10 +1843,30 @@ def main() -> None:
     validation = {}
     if args.cad_measurement:
         validation = cad_validate_json(args.cad_measurement)
-    out = build(scans, sys_scans, cfg, args.out_prefix, trunk_scans, cad_measurement, mep_geometry)
+    docs = ([("--scan", d) for d in scans] + [("--system", d) for d in sys_scans]
+            + [("--trunk-scan", d) for d in trunk_scans])
+    try:
+        guard = guard_plan_sources(docs, allow_manual=bool(args.allow_manual))
+    except GuardError as exc:
+        sys.stderr.write("[GuardError %d] %s\n" % (exc.code, exc.message))
+        if exc.hint:
+            sys.stderr.write("修复: %s\n" % exc.hint)
+        raise SystemExit(exc.code) from None
+    stats: dict = {"project": args.project,
+                   "inputs": [{"label": label, "file": str(d.get("file") or ""),
+                               "provenance": _doc_provenance(d)} for label, d in docs]}
+    out = build(scans, sys_scans, cfg, args.out_prefix, trunk_scans, cad_measurement, mep_geometry, stats=stats)
+    side = write_plan_sidecars(args.out_prefix, guard, stats, raw)
     if validation.get("ok") is False:
         print("cad-measurement validation failed:", json.dumps(validation["errors"], ensure_ascii=False))
+    if guard.get("mode") != "formal":
+        sys.stderr.write("[mep_plan] 手工来源（provenance=manual）：final_quantity=false，不得报正式量。\n")
     print(i18n.T(lang, "written") + ":", out)
+    print(json.dumps({"provenance": side["provenance"].get("provenance"),
+                      "contract_id": side["provenance"].get("contract_id") or "",
+                      "final_quantity": False,
+                      "formal_ledger_eligible": False,
+                      "handoff_members": side["members"]}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -1,11 +1,15 @@
 {
   "name": "anzhuang-suanliang",
-  "version": "0.4.35",
+  "version": "0.4.38",
+  "entry_policy": "contract-only",
   "author": "lis",
   "license": "CC-BY-NC-SA-4.0",
   "entry": "SKILL.md",
   "requires": {
-    "skill": "cad-file-reader>=0.28.0 (显式依赖：安装本技能将一并安装/自举)",
+    "skills": {
+      "cad-file-reader": ">=0.41.0",
+      "lis-skill-bus": ">=0.1.11"
+    },
     "python": ">=3.10"
   },
   "scripts": [
@@ -27,7 +31,10 @@
     "scripts/run_preflight.sh",
     "scripts/self_test.py",
     "scripts/setup.sh",
-    "scripts/smoke_utf8_json.py"
+    "scripts/smoke_utf8_json.py",
+    "scripts/contract_guard.py",
+    "scripts/contract_support.py",
+    "scripts/entry_gate.py"
   ],
   "references": [
     ".gitignore",

@@ -6,13 +6,13 @@
 
 ## 0.4.0 优化概览
 
-- 对接 `cad-file-reader >= 0.25.0`，在扫描层记录底座版本和测量候选兼容状态。
+- 对接 `cad-file-reader >= 0.41.0` 与 `lis-skill-bus >= 0.1.11`：图纸只在底座解一次，本技能只消费 `cad-contract/v1`。
 - 支持把 CAD 识图产生的长度、面积、体积候选导入“CAD测量候选核对”工作表；这些值只作识图证据，`final_quantity=false`。
 - 算量口径、材料量、损耗和核对清单仍由本技能负责，不把识图候选直接当工程量。
 
 ## 能做什么
 
-- 输入：安装工程 DWG，或已生成的 `.scan.json` 索引。
+- 输入：`cad-file-reader` 生成的 `cad-contract/v1` 契约，或已生成的 `.scan.json` 索引。DWG/DXF/DWT 直接传入退出 `23`。
 - 输出：一个多工作表 xlsx，包含口径说明、规范约束、双口径映射、导管与桥架、电线电缆、干线电缆、设备、图层分档、配电箱回路、未匹配坐标簇、水专业、水系统分区、连通性核对、立管识别、支架估算、置信度分级、总量守恒、材料表提取、材料归并、立管估算和核对清单。
 - 覆盖对象：导管、电线、电缆、桥架、给排水、喷淋、支吊架、设备、消防报警、应急照明。
 - 双口径：
@@ -22,12 +22,16 @@
 
 ## 用法
 
-先扫描 DWG，再汇总出表：
+先用底座解图生成契约，本技能只把契约转成扫描 JSON，再汇总出表：
 
 ```bash
-bash scripts/mep_scan.sh 平面图.dwg --out 平面.json
-bash scripts/mep_scan.sh 系统图.dwg --out 系统.json
-bash scripts/mep_scan.sh 干线平面图.dwg --out 干线.json
+# 1) cad-file-reader 是唯一解图入口，一次解图产出 cad-contract/v1
+cad-file-reader/scripts/cad_scan.sh 平面图.dwg --with-blocks --with-attrib --contract-out 平面.contract.json
+
+# 2) 本技能只消费契约（不再打开图纸）
+bash scripts/mep_scan.sh 平面.contract.json --contract --out 平面.json
+bash scripts/mep_scan.sh 系统契约.json --contract --out 系统.json
+bash scripts/mep_scan.sh 干线契约.json --contract --out 干线.json
 
 bash scripts/mep_plan.sh \
   --scan 平面.json \
@@ -38,15 +42,12 @@ bash scripts/mep_plan.sh \
 
 如果已有 `.scan.json`，直接把多个平面扫描 JSON 传给 `mep_plan.py --scan`，不需要重新扫描 DWG。
 
-`mep_scan.py` 会自动查找同级或常见安装位置的 `cad-file-reader`（建议 0.25.0+）；若找不到，设置环境变量：
-
-```bash
-export CAD_SKILL_DIR=/path/to/cad-file-reader
-```
+`mep_scan.py --check-deps` 会检查 `cad-file-reader` 与 `lis-skill-bus`：缺 reader 退出 `20`、缺 bus 退出 `21`，打印安装命令后停止，不自行解图。诊断时可用 `CAD_SKILL_DIR` / `SKILLBUS_HOME` 指向非默认安装位置。
 
 ## 依赖
 
-- `cad-file-reader >= 0.25.0`：读取 DWG，并在扫描结果记录版本/测量候选兼容状态；`mep_plan.py --cad-measurement` 可导入测量候选做识图复核，候选不参与算量。
+- `cad-file-reader >= 0.41.0`：唯一图纸解析器，产出 `cad-contract/v1`；`mep_plan.py --cad-measurement` 可导入测量候选做识图复核，候选不参与算量。
+- `lis-skill-bus >= 0.1.11`：契约传递与复用，缺 bus 退出 `21`。
 - Python ≥3.10。
 - openpyxl：生成 xlsx。
 - 常见系统：macOS/Linux；扫描层当前以本机 CAD 解析环境为主。
